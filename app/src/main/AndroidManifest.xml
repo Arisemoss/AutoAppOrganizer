@@ -3,11 +3,11 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@android:drawable/ic_menu_sort_by_size"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@android:drawable/ic_menu_sort_by_size"
+        android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+        android:theme="@style/Theme.AutoAppOrganizer">
         
         <activity
             android:name=".ui.MainActivity"

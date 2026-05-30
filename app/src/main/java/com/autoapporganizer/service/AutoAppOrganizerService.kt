@@ -1,6 +1,7 @@
 package com.autoapporganizer.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.graphics.Rect
@@ -11,7 +12,6 @@ import com.autoapporganizer.model.DesktopItem
 import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.CategoryMatcher
 import kotlinx.coroutines.*
-import java.util.*
 
 /**
  * 桌面整理无障碍服务
@@ -48,6 +48,22 @@ class AutoAppOrganizerService : AccessibilityService() {
         instance = this
         categoryMatcher = CategoryMatcher(this)
         backupManager = BackupManager(this)
+    }
+    
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        
+        // 配置服务信息，在代码中补充配置
+        val info = serviceInfo ?: AccessibilityServiceInfo()
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+        info.flags = AccessibilityServiceInfo.FLAG_DEFAULT or
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        setServiceInfo(info)
     }
     
     override fun onDestroy() {
@@ -326,7 +342,7 @@ class AutoAppOrganizerService : AccessibilityService() {
     }
     
     /**
-     * 模拟拖拽
+     * 模拟拖拽 - 长按并移动
      */
     private suspend fun dragAndDrop(fromBounds: Rect?, toBounds: Rect?) {
         if (fromBounds == null || toBounds == null) return
@@ -336,20 +352,20 @@ class AutoAppOrganizerService : AccessibilityService() {
         val toX = toBounds.centerX().toFloat()
         val toY = toBounds.centerY().toFloat()
         
-        // 创建长按并拖拽的手势
+        // 创建从起点到终点的路径，模拟长按拖拽
         val path = Path()
         path.moveTo(fromX, fromY)
+        path.lineTo(toX, toY)
         
-        // 先长按
-        val longPressPath = Path()
-        longPressPath.moveTo(fromX, fromY)
+        // 总持续时间：长按 + 移动
+        val totalDuration = 800L  // 800ms 总时间
         
-        val longPressBuilder = GestureDescription.Builder()
-        val longPressStroke = GestureDescription.StrokeDescription(longPressPath, 0, 500)
-        longPressBuilder.addStroke(longPressStroke)
+        val gestureBuilder = GestureDescription.Builder()
+        val stroke = GestureDescription.StrokeDescription(path, 0, totalDuration)
+        gestureBuilder.addStroke(stroke)
         
         val gestureResult = CompletableDeferred<Boolean>()
-        dispatchGesture(longPressBuilder.build(), object : GestureResultCallback() {
+        dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 gestureResult.complete(true)
             }
@@ -359,30 +375,8 @@ class AutoAppOrganizerService : AccessibilityService() {
             }
         }, null)
         
+        // 等待手势完成
         gestureResult.await()
-        delay(100)
-        
-        // 再拖拽
-        val dragPath = Path()
-        dragPath.moveTo(fromX, fromY)
-        dragPath.lineTo(toX, toY)
-        
-        val dragBuilder = GestureDescription.Builder()
-        val dragStroke = GestureDescription.StrokeDescription(dragPath, 0, 300)
-        dragBuilder.addStroke(dragStroke)
-        
-        val dragResult = CompletableDeferred<Boolean>()
-        dispatchGesture(dragBuilder.build(), object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                dragResult.complete(true)
-            }
-            
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                dragResult.complete(false)
-            }
-        }, null)
-        
-        dragResult.await()
     }
     
     /**
