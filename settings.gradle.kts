@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "AutoAppOrganizer"
-include ':app'
+include(":app")
