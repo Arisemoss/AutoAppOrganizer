@@ -11,6 +11,7 @@ import com.autoapporganizer.model.DesktopBackup
 import com.autoapporganizer.model.DesktopItem
 import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.CategoryMatcher
+import com.autoapporganizer.util.DiagnosticLogger
 import kotlinx.coroutines.*
 
 /**
@@ -54,6 +55,11 @@ class AutoAppOrganizerService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         
+        DiagnosticLogger.clear()
+        DiagnosticLogger.info(TAG, "服务已连接")
+        DiagnosticLogger.info(TAG, "设备: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+        DiagnosticLogger.info(TAG, "Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
+        
         // 配置服务信息，在代码中补充配置
         val info = serviceInfo ?: AccessibilityServiceInfo()
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
@@ -65,6 +71,7 @@ class AutoAppOrganizerService : AccessibilityService() {
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         setServiceInfo(info)
+        DiagnosticLogger.info(TAG, "服务配置完成")
     }
     
     override fun onDestroy() {
@@ -170,21 +177,76 @@ class AutoAppOrganizerService : AccessibilityService() {
     }
     
     /**
-     * 扫描桌面
+     * 扫描桌面 — 带诊断日志
      */
     private fun scanDesktop(): List<DesktopItem> {
-        val root = rootInActiveWindow ?: return emptyList()
+        val root = rootInActiveWindow
+        if (root == null) {
+            DiagnosticLogger.error(TAG, "rootInActiveWindow 为 null — 可能不在桌面或无障碍未授权")
+            return emptyList()
+        }
+        
+        // 记录当前窗口信息
+        val rootPkg = root.packageName?.toString() ?: "未知"
+        val rootCls = root.className?.toString() ?: "未知"
+        DiagnosticLogger.info(TAG, "当前窗口包名: $rootPkg")
+        DiagnosticLogger.info(TAG, "当前窗口类名: $rootCls")
+        DiagnosticLogger.info(TAG, "根节点子节点数: ${root.childCount}")
+        
+        // 收集类名统计
+        val classCounts = mutableMapOf<String, Int>()
         val items = mutableListOf<DesktopItem>()
+        var totalNodes = 0
+        var skippedNoName = 0
         
         traverseNodes(root) { node ->
+            totalNodes++
+            val cls = node.className?.toString() ?: ""
+            classCounts[cls] = (classCounts[cls] ?: 0) + 1
+            
             val item = parseNodeToItem(node)
             if (item != null && item.type == DesktopItem.ItemType.APP) {
                 items.add(item)
+                DiagnosticLogger.scan(TAG, "✓ APP: ${item.name} | bounds=(${item.bounds.centerX()},${item.bounds.centerY()}) | pkg=${item.packageName ?: "?"}")
+            } else if (item == null && isPotentialIcon(node)) {
+                skippedNoName++
+                val name = node.contentDescription?.toString() ?: node.text?.toString() ?: "(无)"
+                val clsShort = cls.substringAfterLast('.')
+                DiagnosticLogger.scan(TAG, "✗ 跳过: name='$name' | class=$clsShort | clickable=${node.isClickable}")
             }
             true
         }
         
+        // 输出类名分布统计（最有价值的诊断信息）
+        DiagnosticLogger.info(TAG, "=== 扫描结果 ===")
+        DiagnosticLogger.info(TAG, "总节点: $totalNodes | 识别APP: ${items.size} | 跳过无名称: $skippedNoName")
+        DiagnosticLogger.info(TAG, "节点类名分布 (Top 15):")
+        classCounts.entries
+            .sortedByDescending { it.value }
+            .take(15)
+            .forEach { (cls, count) ->
+                DiagnosticLogger.debug(TAG, "  ${cls.substringAfterLast('.')} × $count")
+            }
+        
+        if (items.isEmpty()) {
+            DiagnosticLogger.warn(TAG, "未找到任何APP图标！可能原因:")
+            DiagnosticLogger.warn(TAG, "  1. Launcher 使用非标准视图类名 (见上方类名分布)")
+            DiagnosticLogger.warn(TAG, "  2. 无障碍服务未完全授权")
+            DiagnosticLogger.warn(TAG, "  3. 当前窗口不是桌面 (包名: $rootPkg)")
+        }
+        
         return items
+    }
+    
+    /** 预检：节点是否有可能是图标（有文本描述/内容描述且可点击） */
+    private fun isPotentialIcon(node: AccessibilityNodeInfo): Boolean {
+        val name = node.contentDescription?.toString() ?: node.text?.toString()
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        // 过滤太小或太大的节点
+        val w = bounds.width()
+        val h = bounds.height()
+        return !name.isNullOrEmpty() && w in 40..600 && h in 40..600
     }
     
     /**
@@ -248,17 +310,49 @@ class AutoAppOrganizerService : AccessibilityService() {
     }
     
     /**
-     * 判断是否是应用图标
+     * 判断是否是应用图标 — 宽松匹配，适配更多 Launcher
+     *
+     * 不同 Launcher 的图标节点类名差异巨大：
+     *   - MIUI:   android.widget.RelativeLayout / TextView
+     *   - OneUI:  com.android.launcher3.BubbleTextView
+     *   - Pixel:  android.widget.TextView
+     *   - Nova:   com.teslacoilsw.launcher.FastBitmapDrawable
+     *   - 华为:    com.huawei.android.launcher.ItemIcon
+     *
+     * 策略：名称非空 + (可点击 或 内容描述非空) + 尺寸合理
      */
     private fun isAppIcon(node: AccessibilityNodeInfo): Boolean {
-        val className = node.className?.toString() ?: return false
-        // Match launcher icon views; exclude non-app UI elements by class name
-        if (!className.contains("Item") && !className.contains("Icon") &&
-            !className.contains("Cell") && !className.contains("Shortcut")) {
+        val name = node.contentDescription?.toString() ?: node.text?.toString()
+        if (name.isNullOrEmpty()) return false
+        
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        val w = bounds.width()
+        val h = bounds.height()
+        
+        // 图标尺寸通常在 60~400dp 之间
+        if (w !in 40..600 || h !in 40..600) return false
+        
+        // 排除已知非图标节点
+        val className = node.className?.toString() ?: ""
+        if (className.contains("RecyclerView") || className.contains("ListView") ||
+            className.contains("ScrollView") || className.contains("GridView") ||
+            className.contains("ViewGroup") && !node.isClickable) {
             return false
         }
-        val name = node.contentDescription?.toString() ?: node.text?.toString()
-        return !name.isNullOrEmpty() && node.isClickable
+        
+        // 有内容描述或有文本 + 可点击 → 很可能是图标
+        // 部分 Launcher 的图标不直接 clickable，但父节点是
+        if (node.isClickable) return true
+        
+        // 如果自己不 clickable 但父节点 clickable 且带 Action，也算
+        val parent = node.parent
+        if (parent != null && parent.isClickable && 
+            node.isEnabled && name.length >= 1) {
+            return true
+        }
+        
+        return false
     }
     
     /**
@@ -273,6 +367,27 @@ class AutoAppOrganizerService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             traverseNodes(child, callback)
+        }
+    }
+    
+    /**
+     * 执行完整诊断 — 不整理，只扫描并输出日志
+     */
+    fun runDiagnostic() {
+        if (isOrganizing) return
+        serviceScope.launch {
+            try {
+                DiagnosticLogger.clear()
+                DiagnosticLogger.info(TAG, "=== 开始诊断扫描 ===")
+                delay(300)
+                val items = scanDesktop()
+                DiagnosticLogger.info(TAG, "=== 诊断完成: 找到 ${items.size} 个APP图标 ===")
+                items.forEachIndexed { i, item ->
+                    DiagnosticLogger.info(TAG, "  [${i+1}] ${item.name} → ${item.packageName ?: "?"}")
+                }
+            } catch (e: Exception) {
+                DiagnosticLogger.error(TAG, "诊断异常: ${e.message}")
+            }
         }
     }
     
