@@ -18,6 +18,11 @@ import kotlinx.coroutines.*
  */
 class AutoAppOrganizerService : AccessibilityService() {
     
+    interface OrganizeCallback {
+        fun onProgress(progress: Int, message: String)
+        fun onComplete(success: Boolean, folderCount: Int, message: String)
+    }
+    
     companion object {
         private const val TAG = "AutoOrganizerService"
         var instance: AutoAppOrganizerService? = null
@@ -30,11 +35,6 @@ class AutoAppOrganizerService : AccessibilityService() {
             private set
         
         var organizeCallback: OrganizeCallback? = null
-        
-        interface OrganizeCallback {
-            fun onProgress(progress: Int, message: String)
-            fun onComplete(success: Boolean, folderCount: Int, message: String)
-        }
     }
     
     private val serviceScope = MainScope()
