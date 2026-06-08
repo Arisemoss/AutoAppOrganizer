@@ -57,7 +57,9 @@ class AutoAppOrganizerService : AccessibilityService() {
         // 配置服务信息，在代码中补充配置
         val info = serviceInfo ?: AccessibilityServiceInfo()
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-        info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+        // Only listen for window events — we trigger organization actively, not passively
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         info.flags = AccessibilityServiceInfo.FLAG_DEFAULT or
                 AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                 AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE or
@@ -238,29 +240,26 @@ class AutoAppOrganizerService : AccessibilityService() {
      * 判断是否是文件夹
      */
     private fun isFolder(node: AccessibilityNodeInfo): Boolean {
+        val className = node.className?.toString() ?: ""
         val desc = node.contentDescription?.toString() ?: ""
         val text = node.text?.toString() ?: ""
-        return desc.contains("文件夹") || 
+        return desc.contains("文件夹") ||
                text.contains("文件夹") ||
-               node.childCount > 3
+               (className.contains("Folder") && node.childCount >= 2)
     }
     
     /**
      * 判断是否是应用图标
      */
     private fun isAppIcon(node: AccessibilityNodeInfo): Boolean {
-        val name = node.contentDescription?.toString() ?: node.text?.toString()
-        if (name.isNullOrEmpty()) return false
-        
-        // 排除明显不是应用的
-        if (name.contains("搜索") || name.contains("编辑") || 
-            name.contains("设置") || name.contains("时钟") ||
-            name.contains("天气")) {
+        val className = node.className?.toString() ?: return false
+        // Match launcher icon views; exclude non-app UI elements by class name
+        if (!className.contains("Item") && !className.contains("Icon") &&
+            !className.contains("Cell") && !className.contains("Shortcut")) {
             return false
         }
-        
-        // 检查是否可点击
-        return node.isClickable
+        val name = node.contentDescription?.toString() ?: node.text?.toString()
+        return !name.isNullOrEmpty() && node.isClickable
     }
     
     /**
@@ -324,19 +323,21 @@ class AutoAppOrganizerService : AccessibilityService() {
     private suspend fun createFolderAndAddItems(items: List<DesktopItem>, category: String) {
         if (items.size < 2) return
         
-        // 取前两个图标创建文件夹
+        // Take the first two icons to create a folder
         val first = items[0]
         val second = items[1]
         
-        // 模拟拖拽第一个图标到第二个图标上
+        // Drag first onto second — the folder will live at second's position
         dragAndDrop(first.bounds, second.bounds)
-        
         delay(500)
         
-        // 将剩余图标拖入文件夹
+        // After merging, second.bounds may be stale. Keep using the original
+        // target location for subsequent drags so they land in the same folder.
+        val folderBounds = second.bounds
+        
         for (i in 2 until items.size) {
             val item = items[i]
-            dragAndDrop(item.bounds, second.bounds)
+            dragAndDrop(item.bounds, folderBounds)
             delay(300)
         }
     }
@@ -352,17 +353,21 @@ class AutoAppOrganizerService : AccessibilityService() {
         val toX = toBounds.centerX().toFloat()
         val toY = toBounds.centerY().toFloat()
         
-        // 创建从起点到终点的路径，模拟长按拖拽
-        val path = Path()
-        path.moveTo(fromX, fromY)
-        path.lineTo(toX, toY)
+        // Stroke 1: stationary long-press at starting point (500ms)
+        val longPressPath = Path()
+        longPressPath.moveTo(fromX, fromY)
+        longPressPath.lineTo(fromX, fromY)  // stays in place
         
-        // 总持续时间：长按 + 移动
-        val totalDuration = 800L  // 800ms 总时间
+        // Stroke 2: drag from start to target (500ms)
+        val dragPath = Path()
+        dragPath.moveTo(fromX, fromY)
+        dragPath.lineTo(toX, toY)
         
         val gestureBuilder = GestureDescription.Builder()
-        val stroke = GestureDescription.StrokeDescription(path, 0, totalDuration)
-        gestureBuilder.addStroke(stroke)
+        val longPressStroke = GestureDescription.StrokeDescription(longPressPath, 0, 500L)
+        gestureBuilder.addStroke(longPressStroke)
+        val dragStroke = GestureDescription.StrokeDescription(dragPath, 500L, 500L)
+        gestureBuilder.addStroke(dragStroke)
         
         val gestureResult = CompletableDeferred<Boolean>()
         dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
@@ -375,7 +380,6 @@ class AutoAppOrganizerService : AccessibilityService() {
             }
         }, null)
         
-        // 等待手势完成
         gestureResult.await()
     }
     
