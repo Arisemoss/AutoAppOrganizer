@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout 
+<!--
+    AutoAppOrganizer — Premium Main Screen
+    Design direction: Calm Productivity Minimal
+    Palette: Slate-Blue + Warm Stone
+    Structure: Hero card → Progress → About footer
+-->
+<androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
@@ -8,117 +14,249 @@
     android:background="@color/background"
     tools:context=".ui.MainActivity">
 
-    <!-- 标题 -->
-    <TextView
-        android:id="@+id/tvTitle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/app_name"
-        android:textSize="28sp"
-        android:textColor="@color/text_primary"
-        android:textStyle="bold"
+    <!-- ===== Scrollable body ===== -->
+    <ScrollView
+        android:id="@+id/scrollBody"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:fillViewport="true"
+        android:scrollbars="none"
         app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/dividerAbout"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="80dp" />
-
-    <!-- 主要按钮 -->
-    <androidx.cardview.widget.CardView
-        android:id="@+id/cardOrganize"
-        android:layout_width="140dp"
-        android:layout_height="140dp"
-        app:cardCornerRadius="70dp"
-        app:cardElevation="8dp"
-        app:cardBackgroundColor="@color/primary"
-        android:clickable="true"
-        android:focusable="true"
-        app:layout_constraintTop_toBottomOf="@id/tvTitle"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="60dp">
+        app:layout_constraintEnd_toEndOf="parent">
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:orientation="vertical">
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:paddingTop="48dp"
+            android:paddingBottom="32dp">
 
-            <ImageView
-                android:layout_width="56dp"
-                android:layout_height="56dp"
-                android:src="@android:drawable/ic_menu_sort_by_size"
-                android:tint="@color/white" />
-
+            <!-- ===== App identity ===== -->
             <TextView
-                android:id="@+id/tvButtonText"
+                android:id="@+id/tvTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/btn_organize"
-                android:textColor="@color/white"
-                android:textSize="14sp"
-                android:layout_marginTop="8dp" />
+                android:text="@string/app_name"
+                android:textSize="32sp"
+                android:textColor="@color/text_primary"
+                android:textStyle="bold"
+                android:letterSpacing="-0.02"
+                android:fontFamily="sans-serif-medium" />
+
+            <TextView
+                android:id="@+id/tvSubtitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/app_subtitle"
+                android:textSize="15sp"
+                android:textColor="@color/text_secondary"
+                android:layout_marginTop="6dp"
+                android:fontFamily="sans-serif" />
+
+            <!-- ===== Hero card — organize button ===== -->
+            <androidx.cardview.widget.CardView
+                android:id="@+id/cardOrganize"
+                android:layout_width="200dp"
+                android:layout_height="200dp"
+                app:cardCornerRadius="24dp"
+                app:cardElevation="0dp"
+                app:cardBackgroundColor="@color/primary"
+                android:clickable="true"
+                android:focusable="true"
+                android:layout_marginTop="48dp"
+                android:stateListAnimator="@null">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:orientation="vertical">
+
+                    <!-- Icon circle -->
+                    <FrameLayout
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:background="@drawable/bg_icon_circle">
+
+                        <ImageView
+                            android:layout_width="32dp"
+                            android:layout_height="32dp"
+                            android:layout_gravity="center"
+                            android:src="@android:drawable/ic_menu_sort_by_size"
+                            android:tint="@color/primary"
+                            android:alpha="0.85" />
+                    </FrameLayout>
+
+                    <TextView
+                        android:id="@+id/tvButtonText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/btn_organize"
+                        android:textColor="@color/on_primary"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:fontFamily="sans-serif-medium"
+                        android:layout_marginTop="16dp" />
+
+                </LinearLayout>
+
+            </androidx.cardview.widget.CardView>
+
+            <!-- ===== Progress section ===== -->
+            <LinearLayout
+                android:id="@+id/layoutProgress"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:layout_marginTop="36dp"
+                android:visibility="gone"
+                tools:visibility="visible">
+
+                <ProgressBar
+                    android:id="@+id/progressBar"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="6dp"
+                    android:max="100"
+                    android:progress="0"
+                    android:indeterminate="false"
+                    android:progressTint="@color/primary"
+                    android:progressBackgroundTint="@color/card_stroke_light" />
+
+                <TextView
+                    android:id="@+id/tvProgress"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/organizing"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp"
+                    android:layout_marginTop="14dp"
+                    android:fontFamily="sans-serif" />
+
+                <Button
+                    android:id="@+id/btnUndo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="@string/btn_undo"
+                    android:textColor="@color/primary"
+                    android:textSize="14sp"
+                    android:backgroundTint="@android:color/transparent"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingStart="20dp"
+                    android:paddingEnd="20dp"
+                    android:visibility="gone"
+                    android:layout_marginTop="12dp"
+                    tools:visibility="visible" />
+
+            </LinearLayout>
+
+            <!-- ===== Widget warning ===== -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginTop="32dp"
+                android:alpha="0.6">
+
+                <View
+                    android:layout_width="6dp"
+                    android:layout_height="6dp"
+                    android:background="@drawable/bg_dot_accent" />
+
+                <TextView
+                    android:id="@+id/tvWidgetWarning"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/widget_warning"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp"
+                    android:layout_marginStart="8dp"
+                    android:fontFamily="sans-serif" />
+
+            </LinearLayout>
 
         </LinearLayout>
 
-    </androidx.cardview.widget.CardView>
+    </ScrollView>
 
-    <!-- 进度条 -->
-    <ProgressBar
-        android:id="@+id/progressBar"
-        style="?android:attr/progressBarStyleHorizontal"
+    <!-- ===== Divider above about ===== -->
+    <View
+        android:id="@+id/dividerAbout"
+        android:layout_width="0dp"
+        android:layout_height="1dp"
+        android:background="@color/card_stroke_light"
+        android:alpha="0.5"
+        app:layout_constraintBottom_toTopOf="@id/layoutAbout"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp" />
+
+    <!-- ===== About section (fixed at bottom) ===== -->
+    <LinearLayout
+        android:id="@+id/layoutAbout"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:max="100"
-        android:progress="0"
-        android:indeterminate="false"
-        android:progressTint="@color/primary"
-        android:layout_marginStart="40dp"
-        android:layout_marginEnd="40dp"
-        android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/cardOrganize"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="40dp" />
-
-    <!-- 进度文本 -->
-    <TextView
-        android:id="@+id/tvProgress"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/organizing"
-        android:textColor="@color/text_secondary"
-        android:textSize="14sp"
-        android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/progressBar"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp" />
-
-    <!-- 底部提示 -->
-    <TextView
-        android:id="@+id/tvWidgetWarning"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/widget_warning"
-        android:textColor="@color/text_secondary"
-        android:textSize="13sp"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:paddingTop="16dp"
+        android:paddingBottom="8dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginBottom="40dp" />
+        android:layout_marginBottom="24dp">
 
-    <!-- 撤销按钮 -->
-    <Button
-        android:id="@+id/btnUndo"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/btn_undo"
-        android:backgroundTint="@color/primary"
-        android:textColor="@color/white"
-        android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/tvProgress"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="24dp" />
+        <TextView
+            android:id="@+id/tvAboutTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/about_title"
+            android:textSize="11sp"
+            android:textColor="@color/text_tertiary_light"
+            android:letterSpacing="0.08"
+            android:textAllCaps="true"
+            android:fontFamily="sans-serif-medium" />
+
+        <TextView
+            android:id="@+id/tvAboutAuthor"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/about_author"
+            android:textSize="14sp"
+            android:textColor="@color/text_secondary"
+            android:layout_marginTop="6dp"
+            android:fontFamily="sans-serif" />
+
+        <TextView
+            android:id="@+id/tvAboutVersion"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/about_version"
+            android:textSize="12sp"
+            android:textColor="@color/text_tertiary_light"
+            android:layout_marginTop="3dp"
+            android:fontFamily="sans-serif"
+            android:alpha="0.8" />
+
+        <TextView
+            android:id="@+id/tvAboutCopyright"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/about_copyright"
+            android:textSize="11sp"
+            android:textColor="@color/text_tertiary_light"
+            android:layout_marginTop="10dp"
+            android:alpha="0.5"
+            android:fontFamily="sans-serif" />
+
+    </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
