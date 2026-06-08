@@ -44,4 +44,6 @@
     <color name="background">#FAFAF9</color>
     <color name="text_primary">#1E293B</color>
     <color name="text_secondary">#64748B</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="log_bg">#F1F5F9</color>
 </resources>

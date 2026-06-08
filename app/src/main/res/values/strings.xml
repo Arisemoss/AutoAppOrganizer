@@ -15,4 +15,11 @@
     <string name="about_author">作者：云彩烟花</string>
     <string name="about_version">版本：1.00</string>
     <string name="about_copyright">© 2025 云彩烟花 · 保留所有权利</string>
+    <string name="btn_diagnose">🔍 诊断桌面</string>
+    <string name="log_title">📋 诊断日志</string>
+    <string name="log_show">查看日志</string>
+    <string name="log_hide">隐藏日志</string>
+    <string name="log_copy">复制</string>
+    <string name="log_clear">清空</string>
+    <string name="diagnose_running">正在扫描桌面…</string>
 </resources>
