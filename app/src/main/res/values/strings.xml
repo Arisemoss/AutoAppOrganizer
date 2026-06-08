@@ -1,13 +1,18 @@
 <resources>
     <string name="app_name">桌面整理</string>
+    <string name="app_subtitle">一键智能分类，桌面清爽如新</string>
     <string name="accessibility_service_description">自动整理桌面图标，按名称分类放入文件夹，不碰小组件</string>
     <string name="btn_organize">一键自动分类</string>
     <string name="btn_undo">撤销整理</string>
     <string name="organizing">正在分析桌面…</string>
     <string name="organize_complete">已为你创建 %d 个文件夹，桌面清爽多了</string>
-    <string name="widget_warning">整理时不动任何小组件</string>
+    <string name="widget_warning">✨ 整理时不动任何小组件</string>
     <string name="permission_needed">请开启无障碍服务以使用此功能</string>
     <string name="go_to_settings">去设置</string>
     <string name="organize_failed">整理失败，请重试</string>
     <string name="return_to_desktop">请返回桌面后再试</string>
+    <string name="about_title">关于</string>
+    <string name="about_author">作者：云彩烟花</string>
+    <string name="about_version">版本：1.00</string>
+    <string name="about_copyright">© 2025 云彩烟花 · 保留所有权利</string>
 </resources>

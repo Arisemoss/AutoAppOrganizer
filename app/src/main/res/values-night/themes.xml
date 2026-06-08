@@ -1,12 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Dark theme overrides for AutoAppOrganizer. -->
+    <!-- Dark theme overrides for premium slate-blue palette -->
     <style name="Theme.AutoAppOrganizer" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/primary</item>
-        <item name="colorPrimaryDark">#0D47A1</item>
+        <item name="colorPrimary">@color/primary_light</item>
+        <item name="colorPrimaryDark">@color/primary_dark</item>
         <item name="colorAccent">@color/accent</item>
-        <item name="android:statusBarColor">?attr/colorPrimaryDark</item>
-        <item name="android:windowBackground">#121212</item>
-        <item name="android:textColorPrimary">#E0E0E0</item>
-        <item name="android:textColorSecondary">#9E9E9E</item>
+        <item name="android:statusBarColor">@color/background_dark</item>
+        <item name="android:navigationBarColor">@color/background_dark</item>
+        <item name="android:windowBackground">@color/background_dark</item>
     </style>
 </resources>
