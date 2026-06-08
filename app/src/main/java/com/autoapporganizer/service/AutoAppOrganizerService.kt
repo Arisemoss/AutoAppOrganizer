@@ -207,7 +207,7 @@ class AutoAppOrganizerService : AccessibilityService() {
             val item = parseNodeToItem(node)
             if (item != null && item.type == DesktopItem.ItemType.APP) {
                 items.add(item)
-                DiagnosticLogger.scan(TAG, "✓ APP: ${item.name} | bounds=(${item.bounds.centerX()},${item.bounds.centerY()}) | pkg=${item.packageName ?: "?"}")
+                DiagnosticLogger.scan(TAG, "✓ APP: ${item.name} | bounds=(${item.bounds?.centerX() ?: "?"},${item.bounds?.centerY() ?: "?"}) | pkg=${item.packageName ?: "?"}")
             } else if (item == null && isPotentialIcon(node)) {
                 skippedNoName++
                 val name = node.contentDescription?.toString() ?: node.text?.toString() ?: "(无)"
