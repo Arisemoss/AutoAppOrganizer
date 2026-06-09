@@ -1,13 +1,13 @@
 <resources>
     <string name="app_name">桌面整理</string>
     <string name="app_subtitle">一键智能分类，桌面清爽如新</string>
-    <string name="accessibility_service_description">自动整理桌面图标，按名称分类放入文件夹，不碰小组件</string>
+    <string name="accessibility_service_description">自动整理桌面图标，按名称分类放入文件夹，不碰小组件。需要无障碍 + 悬浮窗权限。</string>
     <string name="btn_organize">一键自动分类</string>
     <string name="btn_undo">撤销整理</string>
     <string name="organizing">正在分析桌面…</string>
     <string name="organize_complete">已为你创建 %d 个文件夹，桌面清爽多了</string>
     <string name="widget_warning">✨ 整理时不动任何小组件</string>
-    <string name="permission_needed">请开启无障碍服务以使用此功能</string>
+    <string name="permission_needed">请开启无障碍服务</string>
     <string name="go_to_settings">去设置</string>
     <string name="organize_failed">整理失败，请重试</string>
     <string name="return_to_desktop">请返回桌面后再试</string>
@@ -22,4 +22,14 @@
     <string name="log_copy">复制</string>
     <string name="log_clear">清空</string>
     <string name="diagnose_running">正在扫描桌面…</string>
+    <string name="permission_overlay_title">需要悬浮窗权限</string>
+    <string name="permission_overlay_msg">Android 15 + 小米系统需要悬浮窗权限才能正常拖拽图标。</string>
+    <string name="permission_usage_title">需要使用情况访问权限</string>
+    <string name="permission_usage_msg">智能分类需要访问应用使用统计，用于区分常用和不常用应用。</string>
+    <string name="go_to_overlay_settings">开启悬浮窗</string>
+    <string name="go_to_usage_settings">开启使用统计</string>
+    <string name="switching_to_desktop">正在返回桌面…</string>
+    <string name="desktop_confirmed">已确认在桌面，开始扫描</string>
+    <string name="not_on_desktop">当前不在桌面，请按 Home 键返回桌面后重试</string>
+    <string name="node_tree_dumped">节点树已转储到日志，请查看诊断日志</string>
 </resources>
