@@ -18,17 +18,22 @@ import com.autoapporganizer.databinding.ActivityMainBinding
 import com.autoapporganizer.service.AutoAppOrganizerService
 import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.DiagnosticLogger
+import com.autoapporganizer.util.HistoryManager
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * 主界面 — 桌面整理 + 诊断日志 + 权限引导
+ * 主界面 — 桌面整理 + 概览 + 操作网格 + 历史 + 诊断日志 + 权限引导
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var backupManager: BackupManager
+    private lateinit var historyManager: HistoryManager
 
     private val organizeCallback = object : AutoAppOrganizerService.OrganizeCallback {
         override fun onProgress(progress: Int, message: String) {
@@ -43,17 +48,14 @@ class MainActivity : AppCompatActivity() {
                 hideProgress()
 
                 if (success) {
+                    // 直接使用服务返回的 message —— 它对「整理」和「撤销」都准确描述，
+                    // 避免撤销时仍显示「已为你创建 N 个文件夹」这类误导文案。
+                    val sb = Snackbar.make(binding.root, message, Snackbar.LENGTH_LONG)
+                    // 仅在创建了文件夹（整理流程）时才提供「撤销」入口
                     if (folderCount > 0) {
-                        Snackbar.make(binding.root,
-                            getString(R.string.organize_complete, folderCount),
-                            Snackbar.LENGTH_LONG
-                        ).setAction(R.string.btn_undo) { undoOrganize() }.show()
-                    } else {
-                        Snackbar.make(binding.root, "桌面已经很整洁了 ✨", Snackbar.LENGTH_SHORT).show()
+                        sb.setAction(R.string.btn_undo) { undoOrganize() }
                     }
-                    if (backupManager.hasBackup()) {
-                        binding.btnUndo.visibility = View.VISIBLE
-                    }
+                    sb.show()
                 } else {
                     // 失败时自动展开诊断日志
                     binding.layoutDiagnostics.visibility = View.VISIBLE
@@ -63,6 +65,7 @@ class MainActivity : AppCompatActivity() {
                         Snackbar.LENGTH_LONG
                     ).show()
                 }
+                refreshStats()
                 refreshLogView()
             }
         }
@@ -74,6 +77,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         backupManager = BackupManager(this)
+        historyManager = HistoryManager(this)
 
         setupViews()
         checkServiceStatus()
@@ -86,13 +90,12 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         checkServiceStatus()
-        if (backupManager.hasBackup()) {
-            binding.btnUndo.visibility = View.VISIBLE
-        }
+        refreshStats()
         refreshLogView()
     }
 
     private fun setupViews() {
+        // 主操作
         binding.cardOrganize.setOnClickListener {
             when {
                 !isAccessibilityServiceEnabled() -> showPermissionDialog()
@@ -101,14 +104,31 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        binding.btnUndo.setOnClickListener { undoOrganize() }
-        binding.btnRunDiagnostic.setOnClickListener { runDiagnostic() }
+        // 操作网格
+        binding.actionDiagnose.setOnClickListener { runDiagnostic() }
+        binding.actionHistory.setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
+        binding.actionUndo.setOnClickListener { undoOrganize() }
+        binding.actionSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        binding.btnSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+
+        // 最近历史卡片 → 跳转历史页
+        binding.cardRecentHistory.setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
+
+        // 日志面板
         binding.btnToggleLog.setOnClickListener { toggleLogPanel() }
         binding.btnCopyLog.setOnClickListener { copyLogToClipboard() }
         binding.btnClearLog.setOnClickListener {
             DiagnosticLogger.clear()
             refreshLogView()
-            Toast.makeText(this, "日志已清空", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.log_clear, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -122,13 +142,61 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ──────────────────────────────────────────────
+    // 统计与历史预览
+    // ──────────────────────────────────────────────
+
+    private fun refreshStats() {
+        val latest = historyManager.latest()
+        val sessions = historyManager.totalSessions()
+
+        binding.tvStatSessions.text = sessions.toString()
+        binding.tvStatLast.text = if (latest != null) {
+            SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(latest.timestamp))
+        } else {
+            getString(R.string.stat_never)
+        }
+        binding.tvStatApps.text = (latest?.appCount ?: 0).toString()
+        binding.tvStatFolders.text = (latest?.folderCount ?: 0).toString()
+
+        // 最近历史预览卡片
+        binding.tvRecentHistory.text = if (latest != null) {
+            val time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                .format(Date(latest.timestamp))
+            val cats = latest.sortedCategories.take(4).joinToString(" · ") { "${it.key} ${it.value}" }
+            getString(R.string.history_created, latest.folderCount) + "\n$time" +
+                    if (cats.isNotBlank()) "\n$cats" else ""
+        } else {
+            getString(R.string.history_empty)
+        }
+
+        // 状态胶囊
+        updateStatusPill()
+    }
+
+    private fun updateStatusPill() {
+        val ready = isAccessibilityServiceEnabled() && hasOverlayPermission()
+        if (ready) {
+            binding.chipStatus.background = getDrawable(R.drawable.bg_chip_active)
+            // 用独立 drawable,避免对共享 drawable 设 colorFilter 污染其它视图
+            binding.dotStatus.background = getDrawable(R.drawable.bg_dot_primary)
+            binding.tvStatus.text = getString(R.string.status_ready)
+            binding.tvStatus.setTextColor(getColor(R.color.primary))
+        } else {
+            binding.chipStatus.background = getDrawable(R.drawable.bg_chip_warning)
+            binding.dotStatus.background = getDrawable(R.drawable.bg_dot_error)
+            binding.tvStatus.text = getString(R.string.status_not_ready)
+            binding.tvStatus.setTextColor(getColor(R.color.error))
+        }
+    }
+
     private fun refreshLogView() {
         val entries = DiagnosticLogger.entries.value
-        if (entries.isEmpty()) {
-            binding.tvLogContent.text = "暂无日志。\n点击「🔍 诊断桌面」扫描，或点击「一键自动分类」触发整理。"
-            return
+        binding.tvLogContent.text = if (entries.isEmpty()) {
+            getString(R.string.log_empty)
+        } else {
+            entries.joinToString("\n") { it.formatted }
         }
-        binding.tvLogContent.text = entries.joinToString("\n") { it.formatted }
     }
 
     private fun toggleLogPanel() {
@@ -146,13 +214,13 @@ class MainActivity : AppCompatActivity() {
         val text = DiagnosticLogger.dumpAll()
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("诊断日志", text))
-        Toast.makeText(this, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, R.string.log_copy, Toast.LENGTH_SHORT).show()
     }
 
     private fun runDiagnostic() {
         val service = AutoAppOrganizerService.instance
         if (service == null) {
-            Toast.makeText(this, "请先启用无障碍服务", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.permission_needed, Toast.LENGTH_SHORT).show()
             return
         }
         binding.layoutDiagnostics.visibility = View.VISIBLE
@@ -183,6 +251,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 检查使用统计权限 */
+    @Suppress("unused")
     private fun hasUsageStatsPermission(): Boolean {
         return try {
             val appOps = getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
@@ -235,7 +304,7 @@ class MainActivity : AppCompatActivity() {
             AlertDialog.Builder(this)
                 .setTitle("需要权限")
                 .setMessage(issues.joinToString("\n") + extraTip)
-                .setPositiveButton("去设置") { _, _ -> openAccessibilitySettings() }
+                .setPositiveButton(R.string.go_to_settings) { _, _ -> openAccessibilitySettings() }
                 .setNegativeButton("稍后", null)
                 .show()
         }
@@ -265,9 +334,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun showOverlayPermissionDialog() {
         AlertDialog.Builder(this)
-            .setTitle("需要悬浮窗权限")
-            .setMessage("Android 15 + 小米系统需要悬浮窗权限才能正常使用桌面整理功能。")
-            .setPositiveButton("去开启") { _, _ ->
+            .setTitle(R.string.permission_overlay_title)
+            .setMessage(R.string.permission_overlay_msg)
+            .setPositiveButton(R.string.go_to_overlay_settings) { _, _ ->
                 val intent = Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     Uri.parse("package:$packageName")
@@ -302,7 +371,7 @@ class MainActivity : AppCompatActivity() {
     private fun showProgress() {
         binding.layoutProgress.visibility = View.VISIBLE
         binding.cardOrganize.isEnabled = false
-        binding.cardOrganize.alpha = 0.5f
+        binding.cardOrganize.alpha = 0.6f
     }
 
     private fun hideProgress() {

@@ -1,26 +1,56 @@
 <resources>
+    <!-- ===== App identity ===== -->
     <string name="app_name">桌面整理</string>
     <string name="app_subtitle">一键智能分类，桌面清爽如新</string>
+    <string name="app_tagline">让每一屏都井然有序</string>
     <string name="accessibility_service_description">自动整理桌面图标，按名称分类放入文件夹，不碰小组件。需要无障碍 + 悬浮窗权限。</string>
+
+    <!-- ===== Main screen ===== -->
     <string name="btn_organize">一键自动分类</string>
+    <string name="btn_organize_hint">长按图标拖入文件夹，自动归类</string>
     <string name="btn_undo">撤销整理</string>
     <string name="organizing">正在分析桌面…</string>
     <string name="organize_complete">已为你创建 %d 个文件夹，桌面清爽多了</string>
-    <string name="widget_warning">✨ 整理时不动任何小组件</string>
+    <string name="widget_warning">整理时不动任何小组件</string>
+    <string name="status_ready">就绪</string>
+    <string name="status_not_ready">需配置</string>
     <string name="permission_needed">请开启无障碍服务</string>
     <string name="go_to_settings">去设置</string>
     <string name="organize_failed">整理失败，请重试</string>
     <string name="return_to_desktop">请返回桌面后再试</string>
-    <string name="about_title">关于</string>
-    <string name="about_author">作者：云彩烟花</string>
-    <string name="about_version">版本：1.00</string>
-    <string name="about_copyright">© 2025 云彩烟花 · 保留所有权利</string>
-    <string name="btn_diagnose">🔍 诊断桌面</string>
-    <string name="log_title">📋 诊断日志</string>
+
+    <!-- ===== Section titles ===== -->
+    <string name="section_stats">概览</string>
+    <string name="section_actions">更多操作</string>
+    <string name="section_history">最近整理</string>
+    <string name="section_diagnostics">诊断日志</string>
+    <string name="section_about">关于</string>
+
+    <!-- ===== Stats tiles ===== -->
+    <string name="stat_apps">识别应用</string>
+    <string name="stat_folders">文件夹</string>
+    <string name="stat_sessions">整理次数</string>
+    <string name="stat_last">上次整理</string>
+    <string name="stat_never">尚未整理</string>
+
+    <!-- ===== Action cells ===== -->
+    <string name="action_diagnose">诊断桌面</string>
+    <string name="action_diagnose_desc">扫描节点树</string>
+    <string name="action_history">历史记录</string>
+    <string name="action_history_desc">查看过往整理</string>
+    <string name="action_settings">设置</string>
+    <string name="action_settings_desc">分类与偏好</string>
+    <string name="action_undo">撤销整理</string>
+    <string name="action_undo_desc">还原桌面</string>
+
+    <!-- ===== Diagnostics ===== -->
+    <string name="btn_diagnose">诊断桌面</string>
+    <string name="log_title">诊断日志</string>
     <string name="log_show">查看日志</string>
     <string name="log_hide">隐藏日志</string>
     <string name="log_copy">复制</string>
     <string name="log_clear">清空</string>
+    <string name="log_empty">暂无日志。\n点击「诊断桌面」扫描，或点击「一键自动分类」触发整理。</string>
     <string name="diagnose_running">正在扫描桌面…</string>
     <string name="permission_overlay_title">需要悬浮窗权限</string>
     <string name="permission_overlay_msg">Android 15 + 小米系统需要悬浮窗权限才能正常拖拽图标。</string>
@@ -32,4 +62,37 @@
     <string name="desktop_confirmed">已确认在桌面，开始扫描</string>
     <string name="not_on_desktop">当前不在桌面，请按 Home 键返回桌面后重试</string>
     <string name="node_tree_dumped">节点树已转储到日志，请查看诊断日志</string>
+
+    <!-- ===== About ===== -->
+    <string name="about_title">关于</string>
+    <string name="about_author">作者：云彩烟花</string>
+    <string name="about_version">版本：1.10</string>
+    <string name="about_copyright">© 2025 云彩烟花 · 保留所有权利</string>
+    <string name="about_desc">为拥挤的桌面带来秩序的无障碍小工具。</string>
+
+    <!-- ===== Settings ===== -->
+    <string name="settings_title">设置</string>
+    <string name="settings_general">通用</string>
+    <string name="settings_pref_min_folder_size">每个文件夹最少图标数</string>
+    <string name="settings_pref_min_folder_size_desc">同类应用达到此数量才创建文件夹</string>
+    <string name="settings_pref_rarely_used">不常用阈值（分钟）</string>
+    <string name="settings_pref_rarely_used_desc">7 天内前台时长低于此值的应用归入「不常用」</string>
+    <string name="settings_pref_auto_home">整理前自动返回桌面</string>
+    <string name="settings_pref_auto_home_desc">关闭后需手动回到桌面</string>
+    <string name="settings_data">数据</string>
+    <string name="settings_pref_clear_history">清空历史记录</string>
+    <string name="settings_pref_clear_history_desc">删除所有整理记录</string>
+    <string name="settings_pref_clear_backup">删除桌面备份</string>
+    <string name="settings_pref_clear_backup_desc">删除当前桌面备份文件</string>
+    <string name="settings_cleared">已清空</string>
+    <string name="settings_nothing_to_clear">没有可清空的数据</string>
+
+    <!-- ===== History ===== -->
+    <string name="history_title">整理历史</string>
+    <string name="history_empty">还没有整理记录。\n完成一次整理后，这里会显示时间、文件夹数与分类明细。</string>
+    <string name="history_created">创建 %1$d 个文件夹</string>
+    <string name="history_categories">共 %1$d 类：%2$s</string>
+    <string name="history_undo">撤销</string>
+    <string name="history_delete">删除</string>
+    <string name="history_deleted">已删除该记录</string>
 </resources>
