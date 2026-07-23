@@ -1,11 +1,25 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Light theme — premium slate-blue palette -->
+    <!-- Light theme — warm editorial palette -->
     <style name="Theme.AutoAppOrganizer" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="colorPrimary">@color/primary</item>
         <item name="colorPrimaryDark">@color/primary_dark</item>
-        <item name="colorAccent">@color/accent</item>
+        <item name="colorAccent">@color/primary</item>
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:navigationBarColor">@color/background</item>
         <item name="android:windowBackground">@color/background</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <!-- Make system buttons legible on the warm paper background -->
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
+    </style>
+
+    <!-- Card style used across the app — flat, hairline border, soft shadow -->
+    <style name="Widget.AppCard" parent="CardView">
+        <item name="cardBackgroundColor">@color/surface</item>
+        <item name="cardCornerRadius">20dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="cardUseCompatPadding">false</item>
+        <item name="contentPadding">0dp</item>
     </style>
 </resources>

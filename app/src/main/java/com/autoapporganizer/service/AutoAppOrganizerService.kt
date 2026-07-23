@@ -15,9 +15,12 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.autoapporganizer.model.DesktopBackup
 import com.autoapporganizer.model.DesktopItem
+import com.autoapporganizer.model.OrganizeSession
 import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.CategoryMatcher
 import com.autoapporganizer.util.DiagnosticLogger
+import com.autoapporganizer.util.HistoryManager
+import com.autoapporganizer.util.PrefsManager
 import kotlinx.coroutines.*
 
 /**
@@ -45,9 +48,6 @@ class AutoAppOrganizerService : AccessibilityService() {
 
         /** 拖动时长（ms） */
         private const val DRAG_MS = 500L
-
-        /** 「不常用」阈值：7 天内前台时长低于此值（1 分钟）的应用归入不常用 */
-        private const val RARELY_USED_THRESHOLD_MS = 60_000L
 
         /** 已知桌面包名列表（检测当前窗口用）—— 必须与 accessibility_service_config.xml 的 packageNames 保持一致 */
         val LAUNCHER_PACKAGES = setOf(
@@ -87,6 +87,8 @@ class AutoAppOrganizerService : AccessibilityService() {
     private lateinit var categoryMatcher: CategoryMatcher
     private lateinit var backupManager: BackupManager
     private lateinit var usageStatsManager: UsageStatsManager
+    private lateinit var historyManager: HistoryManager
+    private lateinit var prefs: PrefsManager
 
     private var currentBackup: DesktopBackup? = null
 
@@ -95,6 +97,8 @@ class AutoAppOrganizerService : AccessibilityService() {
         instance = this
         categoryMatcher = CategoryMatcher(this)
         backupManager = BackupManager(this)
+        historyManager = HistoryManager(this)
+        prefs = PrefsManager(this)
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
     }
 
@@ -157,12 +161,14 @@ class AutoAppOrganizerService : AccessibilityService() {
             organizeProgress = 0
 
             try {
-                // ① 强制返回桌面
-                reportProgress(5, "正在返回桌面…")
-                val onDesktop = goToHomeScreen()
-                if (!onDesktop) {
-                    organizeCallback?.onComplete(false, 0, "无法切换到桌面，请手动返回桌面后重试")
-                    return@launch
+                // ① 强制返回桌面（受设置控制）
+                if (prefs.autoReturnHome) {
+                    reportProgress(5, "正在返回桌面…")
+                    val onDesktop = goToHomeScreen()
+                    if (!onDesktop) {
+                        organizeCallback?.onComplete(false, 0, "无法切换到桌面，请手动返回桌面后重试")
+                        return@launch
+                    }
                 }
                 DiagnosticLogger.info(TAG, "已确认在桌面: $detectedLauncherPkg")
 
@@ -193,6 +199,16 @@ class AutoAppOrganizerService : AccessibilityService() {
                 // ⑤ 执行整理
                 reportProgress(70, "正在整理桌面…")
                 val folderCount = performOrganize(categorized)
+
+                // ⑥ 记录历史会话
+                val session = OrganizeSession(
+                    timestamp = System.currentTimeMillis(),
+                    folderCount = folderCount,
+                    appCount = desktopItems.size,
+                    categories = categorized.mapValues { it.value.size },
+                    launcher = detectedLauncherPkg
+                )
+                historyManager.append(session)
 
                 reportProgress(100, "整理完成")
                 organizeCallback?.onComplete(true, folderCount, "整理完成，共创建 $folderCount 个文件夹")
@@ -647,7 +663,11 @@ class AutoAppOrganizerService : AccessibilityService() {
      */
     private fun isRarelyUsed(packageName: String, usageStats: Map<String, Long>): Boolean {
         val foregroundMs = usageStats[packageName] ?: return false
-        return foregroundMs < RARELY_USED_THRESHOLD_MS
+        // 阈值由设置控制（分钟 → 毫秒）
+        val thresholdMs = prefs.rarelyUsedMinutes * 60_000L
+        // 阈值为 0 表示禁用「不常用」分类
+        if (thresholdMs <= 0) return false
+        return foregroundMs < thresholdMs
     }
 
     /**
@@ -789,7 +809,8 @@ class AutoAppOrganizerService : AccessibilityService() {
     // ──────────────────────────────────────────────
 
     private suspend fun performOrganize(categorized: Map<String, List<DesktopItem>>): Int {
-        val categoriesToOrganize = categorized.filter { it.value.size >= 2 }
+        val minSize = prefs.minFolderSize
+        val categoriesToOrganize = categorized.filter { it.value.size >= minSize }
         val total = categoriesToOrganize.size
         var folderCount = 0
         for ((category, items) in categoriesToOrganize) {
