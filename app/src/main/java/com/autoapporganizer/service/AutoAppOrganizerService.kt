@@ -15,10 +15,16 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.autoapporganizer.model.DesktopBackup
 import com.autoapporganizer.model.DesktopItem
+import com.autoapporganizer.model.OrganizeSession
 import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.CategoryMatcher
 import com.autoapporganizer.util.DiagnosticLogger
+import com.autoapporganizer.util.HistoryManager
+import com.autoapporganizer.util.PrefsManager
 import kotlinx.coroutines.*
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * 桌面整理无障碍服务 — Android 15 适配版
@@ -40,7 +46,18 @@ class AutoAppOrganizerService : AccessibilityService() {
     companion object {
         private const val TAG = "AutoOrganizerService"
 
-        /** 已知桌面包名列表（检测当前窗口用） */
+        /** 长按保持时长（ms）—— 需大于多数 Launcher 的长按阈值（约 400ms） */
+        private const val LONG_PRESS_MS = 600L
+
+        /** 拖动时长（ms） */
+        private const val DRAG_MS = 500L
+
+        /** 单次手势派发等待系统回调的最长时间（ms）。
+         *  超过此时间仍未收到 onCompleted/onCancelled，视为手势派发失效，
+         *  避免协程因系统不回调而永久挂起、卡住整个整理/撤销流程。 */
+        private const val GESTURE_TIMEOUT_MS = 5000L
+
+        /** 已知桌面包名列表（检测当前窗口用）—— 必须与 accessibility_service_config.xml 的 packageNames 保持一致 */
         val LAUNCHER_PACKAGES = setOf(
             "com.miui.home",           // 小米 MIUI / HyperOS
             "com.android.launcher",    // AOSP / Pixel
@@ -53,6 +70,9 @@ class AutoAppOrganizerService : AccessibilityService() {
             "net.oneplus.launcher",    // OnePlus
             "com.teslacoilsw.launcher",// Nova
             "ch.deletescape.lawnchair",// Lawnchair
+            "com.coloros.launcher",    // OPPO ColorOS 新版
+            "com.funtouch.launcher",   // vivo FuntouchOS
+            "com.android.launcher3",   // Launcher3 (AOSP/Lineage)
         )
 
         var instance: AutoAppOrganizerService? = null
@@ -75,6 +95,8 @@ class AutoAppOrganizerService : AccessibilityService() {
     private lateinit var categoryMatcher: CategoryMatcher
     private lateinit var backupManager: BackupManager
     private lateinit var usageStatsManager: UsageStatsManager
+    private lateinit var historyManager: HistoryManager
+    private lateinit var prefs: PrefsManager
 
     private var currentBackup: DesktopBackup? = null
 
@@ -83,6 +105,8 @@ class AutoAppOrganizerService : AccessibilityService() {
         instance = this
         categoryMatcher = CategoryMatcher(this)
         backupManager = BackupManager(this)
+        historyManager = HistoryManager(this)
+        prefs = PrefsManager(this)
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
     }
 
@@ -100,8 +124,9 @@ class AutoAppOrganizerService : AccessibilityService() {
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
         info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        // 注意：不开启 FLAG_REQUEST_TOUCH_EXPLORATION_MODE —— 触摸探索模式会改变
+        // 触摸事件分发方式，与 dispatchGesture 派发的拖拽手势冲突，导致图标无法被拖动。
         info.flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
-                AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE or
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         setServiceInfo(info)
@@ -129,6 +154,12 @@ class AutoAppOrganizerService : AccessibilityService() {
     // 公开接口
     // ──────────────────────────────────────────────
 
+    /** 统一上报进度：同时更新 organizeProgress 字段并通知回调 */
+    private fun reportProgress(progress: Int, message: String) {
+        organizeProgress = progress.coerceIn(0, 100)
+        organizeCallback?.onProgress(organizeProgress, message)
+    }
+
     /** 开始整理桌面 */
     fun startOrganize() {
         if (isOrganizing) return
@@ -138,42 +169,56 @@ class AutoAppOrganizerService : AccessibilityService() {
             organizeProgress = 0
 
             try {
-                // ① 强制返回桌面
-                organizeCallback?.onProgress(5, "正在返回桌面…")
-                val onDesktop = goToHomeScreen()
-                if (!onDesktop) {
-                    organizeCallback?.onComplete(false, 0, "无法切换到桌面，请手动返回桌面后重试")
-                    return@launch
+                // ① 强制返回桌面（受设置控制）
+                if (prefs.autoReturnHome) {
+                    reportProgress(5, "正在返回桌面…")
+                    val onDesktop = goToHomeScreen()
+                    if (!onDesktop) {
+                        organizeCallback?.onComplete(false, 0, "无法切换到桌面，请手动返回桌面后重试")
+                        return@launch
+                    }
                 }
                 DiagnosticLogger.info(TAG, "已确认在桌面: $detectedLauncherPkg")
 
                 // ② 备份当前桌面
-                organizeCallback?.onProgress(10, "正在备份桌面…")
+                reportProgress(10, "正在备份桌面…")
                 currentBackup = backupDesktop()
                 if (currentBackup != null) {
                     backupManager.saveBackup(currentBackup!!)
                 }
 
                 // ③ 扫描并解析桌面图标
-                organizeCallback?.onProgress(30, "正在分析桌面图标…")
+                reportProgress(30, "正在分析桌面图标…")
                 val desktopItems = scanDesktop()
                 if (desktopItems.isEmpty()) {
                     // 自动触发深度诊断
                     DiagnosticLogger.info(TAG, "=== 自动深度诊断 ===")
-                    dumpNodeTree(rootInActiveWindow)
+                    val diagRoot = rootInActiveWindow
+                    dumpNodeTree(diagRoot)
+                    diagRoot?.recycle()
                     organizeCallback?.onComplete(false, 0, "未找到桌面图标 — 请查看诊断日志")
                     return@launch
                 }
 
                 // ④ 智能分类
-                organizeCallback?.onProgress(50, "正在智能分类…")
+                reportProgress(50, "正在智能分类…")
                 val categorized = categorizeItems(desktopItems)
 
                 // ⑤ 执行整理
-                organizeCallback?.onProgress(70, "正在整理桌面…")
+                reportProgress(70, "正在整理桌面…")
                 val folderCount = performOrganize(categorized)
 
-                organizeCallback?.onProgress(100, "整理完成")
+                // ⑥ 记录历史会话
+                val session = OrganizeSession(
+                    timestamp = System.currentTimeMillis(),
+                    folderCount = folderCount,
+                    appCount = desktopItems.size,
+                    categories = categorized.mapValues { it.value.size },
+                    launcher = detectedLauncherPkg
+                )
+                historyManager.append(session)
+
+                reportProgress(100, "整理完成")
                 organizeCallback?.onComplete(true, folderCount, "整理完成，共创建 $folderCount 个文件夹")
 
             } catch (e: CancellationException) {
@@ -190,13 +235,44 @@ class AutoAppOrganizerService : AccessibilityService() {
 
     /** 撤销整理 */
     fun undoOrganize() {
+        // 与整理流程共享 isOrganizing 互斥锁，避免整理中触发撤销或撤销中再次撤销，
+        // 否则两个协程会同时派发手势，互相干扰。
+        if (isOrganizing) {
+            organizeCallback?.onComplete(false, 0, "正在执行操作，请稍候")
+            return
+        }
         serviceScope.launch {
-            val backup = backupManager.loadBackup() ?: currentBackup
-            if (backup != null) {
-                organizeCallback?.onProgress(50, "正在还原桌面…")
-                organizeCallback?.onComplete(true, 0, "已准备好还原数据")
-            } else {
-                organizeCallback?.onComplete(false, 0, "没有备份数据")
+            isOrganizing = true
+            organizeProgress = 0
+            try {
+                val backup = backupManager.loadBackup() ?: currentBackup
+                if (backup == null) {
+                    organizeCallback?.onComplete(false, 0, "没有备份数据")
+                    return@launch
+                }
+                reportProgress(10, "正在返回桌面…")
+                val onDesktop = goToHomeScreen()
+                if (!onDesktop) {
+                    organizeCallback?.onComplete(false, 0, "无法切换到桌面，撤销失败")
+                    return@launch
+                }
+                reportProgress(40, "正在扫描已创建的文件夹…")
+                val result = dissolveFolders()
+                reportProgress(100, "还原完成")
+                // 区分三种情况，避免「发现文件夹却解散失败」时显示误导性「未发现」
+                val msg = when {
+                    result.dissolved > 0 -> "已尝试还原 ${result.dissolved} 个文件夹"
+                    result.expected > 0 -> "发现 ${result.expected} 个文件夹但未能解散（该机型移除热区位置可能不同，请手动长按文件夹拖至「移除」）"
+                    else -> "未发现可还原的文件夹"
+                }
+                organizeCallback?.onComplete(true, result.dissolved, msg)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DiagnosticLogger.error(TAG, "撤销异常: ${e.message}")
+                organizeCallback?.onComplete(false, 0, "撤销失败: ${e.message}")
+            } finally {
+                isOrganizing = false
             }
         }
     }
@@ -219,17 +295,22 @@ class AutoAppOrganizerService : AccessibilityService() {
                 DiagnosticLogger.info(TAG, "当前窗口包名: ${root.packageName}")
                 DiagnosticLogger.info(TAG, "当前窗口类名: ${root.className}")
                 DiagnosticLogger.info(TAG, "是否桌面: ${root.packageName in LAUNCHER_PACKAGES}")
+                root.recycle()
 
-                dumpNodeTree(root)
+                // scanDesktop 与 dumpNodeTree 各自独立调用 rootInActiveWindow 获取全新快照，
+                // 避免一方 recycle 子节点后另一方复用同一缓存对象导致 getChild 失效。
                 val items = scanDesktop()
+                val dumpRoot = rootInActiveWindow
+                dumpNodeTree(dumpRoot)
+                dumpRoot?.recycle()
 
                 DiagnosticLogger.info(TAG, "=== 诊断完成: 找到 ${items.size} 个APP ===")
                 items.forEachIndexed { i, item ->
                     DiagnosticLogger.info(TAG, "  [${i+1}] ${item.name} → ${item.packageName ?: "?"}")
                 }
 
-                if (items.isEmpty() && root.packageName !in LAUNCHER_PACKAGES) {
-                    DiagnosticLogger.warn(TAG, "当前不在桌面！请手动按 Home 返回桌面后重试")
+                if (items.isEmpty()) {
+                    DiagnosticLogger.warn(TAG, "未发现图标 — 若不在桌面请手动按 Home 返回桌面后重试")
                 }
             } catch (e: Exception) {
                 DiagnosticLogger.error(TAG, "诊断异常: ${e.message}")
@@ -249,8 +330,7 @@ class AutoAppOrganizerService : AccessibilityService() {
      */
     private suspend fun goToHomeScreen(): Boolean {
         // 先检查是否已经在桌面
-        val currentRoot = rootInActiveWindow
-        val currentPkg = currentRoot?.packageName?.toString() ?: ""
+        val currentPkg = currentWindowPackage()
         if (currentPkg in LAUNCHER_PACKAGES) {
             detectedLauncherPkg = currentPkg
             DiagnosticLogger.info(TAG, "已在桌面: $currentPkg")
@@ -265,9 +345,9 @@ class AutoAppOrganizerService : AccessibilityService() {
         // 轮询等待桌面渲染（最长 3 秒）
         repeat(10) { attempt ->
             delay(300)
-            val root = rootInActiveWindow ?: return@repeat
-            val pkg = root.packageName?.toString() ?: return@repeat
-            DiagnosticLogger.debug(TAG, "轮询#${attempt+1}: 窗口=$pkg 类名=${root.className}")
+            val pkg = currentWindowPackage()
+            if (pkg.isEmpty()) return@repeat
+            DiagnosticLogger.debug(TAG, "轮询#${attempt+1}: 窗口=$pkg")
 
             if (pkg in LAUNCHER_PACKAGES) {
                 detectedLauncherPkg = pkg
@@ -279,8 +359,7 @@ class AutoAppOrganizerService : AccessibilityService() {
         }
 
         // 最后一次尝试
-        val lastRoot = rootInActiveWindow
-        val lastPkg = lastRoot?.packageName?.toString() ?: ""
+        val lastPkg = currentWindowPackage()
         if (lastPkg in LAUNCHER_PACKAGES) {
             detectedLauncherPkg = lastPkg
             delay(500)
@@ -290,6 +369,14 @@ class AutoAppOrganizerService : AccessibilityService() {
         DiagnosticLogger.warn(TAG, "无法确认桌面窗口。当前: $lastPkg")
         DiagnosticLogger.warn(TAG, "已知桌面包名: ${LAUNCHER_PACKAGES.joinToString()}")
         return false
+    }
+
+    /** 获取当前活动窗口包名（自动回收节点，避免泄漏） */
+    private fun currentWindowPackage(): String {
+        val root = rootInActiveWindow ?: return ""
+        val pkg = root.packageName?.toString() ?: ""
+        root.recycle()
+        return pkg
     }
 
     // ──────────────────────────────────────────────
@@ -350,6 +437,7 @@ class AutoAppOrganizerService : AccessibilityService() {
             potentialNodes.take(20).forEach { DiagnosticLogger.debug(TAG, it) }
         }
 
+        root.recycle()
         return items
     }
 
@@ -494,9 +582,11 @@ class AutoAppOrganizerService : AccessibilityService() {
         node: AccessibilityNodeInfo,
         depth: Int,
         maxDepth: Int,
-        visited: MutableSet<Int>
+        visited: MutableSet<String>
     ): Int {
-        val id = node.hashCode()
+        // 用「类名 + 屏幕坐标」作为节点指纹，避免 hashCode 碰撞导致节点被误判为已访问而跳过。
+        val bounds = Rect().also { node.getBoundsInScreen(it) }
+        val id = "${node.className}@${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"
         if (id in visited) return 0
         visited.add(id)
 
@@ -505,7 +595,6 @@ class AutoAppOrganizerService : AccessibilityService() {
         val pkg = node.packageName?.toString() ?: ""
         val text = (node.text?.toString() ?: "").take(30)
         val desc = (node.contentDescription?.toString() ?: "").take(30)
-        val bounds = Rect().also { node.getBoundsInScreen(it) }
         val bStr = "[${bounds.left},${bounds.top}-${bounds.right},${bounds.bottom}]"
 
         val flags = mutableListOf<String>()
@@ -544,6 +633,7 @@ class AutoAppOrganizerService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             traverseNodes(child, callback)
+            child.recycle() // 释放子节点，避免长期扫描导致节点泄漏
         }
     }
 
@@ -559,6 +649,7 @@ class AutoAppOrganizerService : AccessibilityService() {
             if (item != null) items.add(item)
             true
         }
+        root.recycle()
         return DesktopBackup(timestamp = System.currentTimeMillis(), screen = 0, items = items)
     }
 
@@ -569,15 +660,23 @@ class AutoAppOrganizerService : AccessibilityService() {
     private fun categorizeItems(items: List<DesktopItem>): Map<String, List<DesktopItem>> {
         val result = mutableMapOf<String, MutableList<DesktopItem>>()
 
-        // 获取使用频率数据
+        // 获取使用频率数据 —— 7 天内前台时长低于阈值的应用归入「不常用」
         val usageStats = getAppUsageStats()
+        DiagnosticLogger.info(TAG, "使用统计可用包数: ${usageStats.size}")
 
         for (item in items) {
             // 优先通过包名分类（更精准）
-            val category = if (item.packageName != null) {
+            val baseCategory = if (item.packageName != null) {
                 categorizeByPackageName(item.packageName)
             } else {
                 categoryMatcher.matchCategory(item.name)
+            }
+
+            // 结合使用频率：几乎不用的应用单独归入「不常用」
+            val category = if (item.packageName != null && isRarelyUsed(item.packageName, usageStats)) {
+                "不常用"
+            } else {
+                baseCategory
             }
 
             if (!result.containsKey(category)) {
@@ -587,6 +686,20 @@ class AutoAppOrganizerService : AccessibilityService() {
         }
 
         return result
+    }
+
+    /**
+     * 判断应用是否「不常用」：
+     * 7 天内前台时长 < 1 分钟（且能查到统计）视为不常用。
+     * 查不到统计（系统应用/未启动过）不归为不常用，避免误伤。
+     */
+    private fun isRarelyUsed(packageName: String, usageStats: Map<String, Long>): Boolean {
+        val foregroundMs = usageStats[packageName] ?: return false
+        // 阈值由设置控制（分钟 → 毫秒）
+        val thresholdMs = prefs.rarelyUsedMinutes * 60_000L
+        // 阈值为 0 表示禁用「不常用」分类
+        if (thresholdMs <= 0) return false
+        return foregroundMs < thresholdMs
     }
 
     /**
@@ -713,10 +826,12 @@ class AutoAppOrganizerService : AccessibilityService() {
         return try {
             val endTime = System.currentTimeMillis()
             val beginTime = endTime - 7 * 24 * 60 * 60 * 1000L
+            // queryUsageStats 文档未保证非 null 返回（权限缺失/区间无效时可能返回 null），
+            // 直接 .associate 会抛 NPE，这里用安全调用兜底。
             val stats = usageStatsManager.queryUsageStats(
                 UsageStatsManager.INTERVAL_DAILY, beginTime, endTime
             )
-            stats.associate { it.packageName to it.totalTimeInForeground }
+            stats?.associate { it.packageName to it.totalTimeInForeground } ?: emptyMap()
         } catch (e: Exception) {
             DiagnosticLogger.warn(TAG, "无法获取使用统计: ${e.message}")
             emptyMap()
@@ -728,29 +843,161 @@ class AutoAppOrganizerService : AccessibilityService() {
     // ──────────────────────────────────────────────
 
     private suspend fun performOrganize(categorized: Map<String, List<DesktopItem>>): Int {
+        val minSize = prefs.minFolderSize
+        val categoriesToOrganize = categorized.filter { it.value.size >= minSize }
+        val total = categoriesToOrganize.size
         var folderCount = 0
-        for ((category, items) in categorized) {
-            if (items.size >= 2) {
-                folderCount++
-                organizeCallback?.onProgress(70 + folderCount * 5, "正在整理 $category…")
-                createFolderAndAddItems(items, category)
-                delay(300)
-            }
+        for ((category, items) in categoriesToOrganize) {
+            folderCount++
+            // 进度从 70 线性推进到 95，避免超过 100
+            val progress = if (total > 0) 70 + (folderCount * 25 / total) else 70
+            reportProgress(progress, "正在整理 $category…")
+            createFolderAndAddItems(items, category)
+            delay(300)
         }
         return folderCount
     }
 
     private suspend fun createFolderAndAddItems(items: List<DesktopItem>, category: String) {
         if (items.size < 2) return
-        val first = items[0]
-        val second = items[1]
-        dragAndDrop(first.bounds, second.bounds)
-        delay(500)
-        val folderBounds = second.bounds
-        for (i in 2 until items.size) {
-            dragAndDrop(items[i].bounds, folderBounds)
-            delay(300)
+        val firstBounds = items[0].bounds ?: return
+        val secondBounds = items[1].bounds ?: return
+        // ① 拖第一个图标到第二个图标上，触发文件夹创建
+        dragAndDrop(firstBounds, secondBounds)
+        delay(600)
+
+        // ② 关键：文件夹创建后，某些 Launcher 会把新文件夹重新对齐到网格，而非停留在
+        //    被覆盖图标的精确位置。旧实现把 folderBounds 固定为 items[1].bounds，
+        //    后续拖入会拖到已失效的旧坐标，命中空位。
+        //    这里重扫桌面，取离「第二个图标原位置」最近的文件夹节点作为后续拖入目标。
+        val folderBounds = scanDesktopFolders()
+            .minByOrNull { f ->
+                val b = f.bounds ?: return@minByOrNull Int.MAX_VALUE
+                val dx = b.centerX() - secondBounds.centerX()
+                val dy = b.centerY() - secondBounds.centerY()
+                dx * dx + dy * dy
+            }?.bounds ?: secondBounds
+        DiagnosticLogger.info(
+            TAG, "「$category」文件夹目标坐标: $folderBounds（原第二图标: $secondBounds" +
+                if (folderBounds != secondBounds) "，已被网格重排）" else "）"
+        )
+
+        if (items.size > 2) {
+            DiagnosticLogger.info(TAG, "开始将剩余 ${items.size - 2} 个图标拖入「$category」文件夹")
+            for (i in 2 until items.size) {
+                val target = items[i]
+                val key = target.packageName ?: target.name ?: ""
+                // 关键：每拖入一个图标，桌面都会自动重排，剩余图标的坐标随之变化。
+                // 旧实现只在循环前重扫一次，导致第 3 个之后的图标被拖到失效的旧坐标上，
+                // 进而拖空或拖错位置。这里改为每轮重新扫描获取最新坐标。
+                val freshItems = scanDesktop().associateBy { it.packageName ?: it.name ?: "" }
+                // 优先用最新坐标；找不到（图标已被前一轮误拖入文件夹等）则跳过，避免拖空。
+                val freshBounds = freshItems[key]?.bounds ?: continue
+                DiagnosticLogger.debug(TAG, "拖入「$category」: ${target.name} → $freshBounds")
+                dragAndDrop(freshBounds, folderBounds)
+                delay(400)
+            }
         }
+    }
+
+    // ──────────────────────────────────────────────
+    // 撤销 / 还原
+    // ──────────────────────────────────────────────
+
+    /** 扫描桌面上的文件夹节点 */
+    private fun scanDesktopFolders(): List<DesktopItem> {
+        val root = rootInActiveWindow ?: return emptyList()
+        val folders = mutableListOf<DesktopItem>()
+        traverseNodes(root) { node ->
+            val item = parseNodeToItem(node)
+            if (item != null && item.type == DesktopItem.ItemType.FOLDER) {
+                folders.add(item)
+            }
+            true
+        }
+        root.recycle()
+        return folders
+    }
+
+    /** 撤销解散结果：expected=扫描到的文件夹数，dissolved=成功解散数 */
+    private data class DissolveResult(val expected: Int, val dissolved: Int)
+
+    /**
+     * 不同 Launcher 长按后的「移除/解散」热区位置不同（均位于屏幕顶部，但 Y 偏移各异）。
+     * 旧实现硬编码 heightPixels/8 是 MIUI 的值，在其它机型上会拖到错误位置导致解散失败。
+     * 这里按检测到的桌面包名/设备品牌返回对应的移除目标点。
+     * @return 零宽高 Rect，centerX/centerY 即移除热区坐标点
+     */
+    private fun computeRemoveHotZone(): Rect {
+        val dm = resources.displayMetrics
+        val pkg = detectedLauncherPkg?.lowercase() ?: ""
+        val mfr = Build.MANUFACTURER.lowercase()
+
+        // Y 因子：移除热区距屏幕顶部的比例（越小越靠顶）
+        val yFactor = when {
+            pkg.contains("miui.home") -> 1f / 8f                                      // MIUI/HyperOS
+            pkg.contains("nexuslauncher") || pkg.contains("launcher3") ||
+                pkg.endsWith("google.android.apps.nexuslauncher") -> 1f / 10f          // Pixel/AOSP Launcher3
+            pkg.contains("sec.android") || mfr.contains("samsung") -> 1f / 7f         // 三星 OneUI
+            pkg.contains("huawei") || mfr.contains("huawei") ||
+                mfr.contains("honor") -> 1f / 8f                                      // 华为/荣耀
+            pkg.contains("coloros") || pkg.contains("oppo.launcher") ||
+                mfr.contains("oppo") || mfr.contains("realme") -> 1f / 7f             // OPPO/Realme
+            pkg.contains("vivo") || pkg.contains("bbk") || pkg.contains("funtouch") ||
+                mfr.contains("vivo") -> 1f / 7f                                       // vivo
+            pkg.contains("oneplus") || mfr.contains("oneplus") -> 1f / 8f             // OnePlus
+            else -> 1f / 8f                                                            // 默认（兼容未知 Launcher）
+        }
+        val cx = dm.widthPixels / 2
+        val cy = (dm.heightPixels * yFactor).toInt()
+        DiagnosticLogger.info(TAG, "移除热区(机型=${detectedLauncherPkg ?: "?"}/$mfr): ($cx,$cy) yFactor=$yFactor")
+        return Rect(cx, cy, cx, cy)
+    }
+
+    /**
+     * 撤销整理：长按每个文件夹后拖到屏幕顶部「移除」区域。
+     * 多数 Launcher（含 MIUI）在长按后会显示「移除 / 解散」热区，
+     * 把文件夹拖到那里即可解散文件夹并把图标还原到桌面。
+     * @return DissolveResult(expected=扫描到的文件夹数, dissolved=成功解散数)
+     */
+    private suspend fun dissolveFolders(): DissolveResult {
+        val removeRect = computeRemoveHotZone()
+
+        val expected = scanDesktopFolders().size
+        if (expected == 0) {
+            DiagnosticLogger.info(TAG, "撤销：未发现文件夹")
+            return DissolveResult(0, 0)
+        }
+        DiagnosticLogger.info(TAG, "撤销：发现 $expected 个文件夹，开始解散")
+
+        var dissolved = 0
+        var lastSignature: String? = null
+        // 关键：解散一个文件夹后，其内部图标会散落回桌面，导致其它文件夹坐标变化，
+        // 旧实现一次性捕获所有文件夹坐标后逐个拖拽，第 2 个起就用了失效坐标。
+        // 这里改为每轮重新扫描，取首个文件夹的最新坐标进行解散。
+        while (dissolved < expected) {
+            val folders = scanDesktopFolders()
+            if (folders.isEmpty()) break
+            val folder = folders.first()
+            val bounds = folder.bounds ?: break
+            val sig = "${folder.name}@$bounds"
+            // 若连续两轮扫到同一个文件夹（名称+坐标均未变），说明上一次拖拽没能解散它
+            // —— 多半是该 Launcher 的「移除热区」位置不同。避免无效死循环，直接跳出。
+            if (sig == lastSignature) {
+                DiagnosticLogger.warn(TAG, "撤销：文件夹未被解散（拖拽无效，可能移除热区位置不符），停止: $sig")
+                break
+            }
+            lastSignature = sig
+            DiagnosticLogger.info(TAG, "撤销：解散文件夹 '${folder.name}' $bounds (第 ${dissolved + 1}/$expected)")
+            dragAndDrop(bounds, removeRect)
+            delay(600)
+            dissolved++
+        }
+        // 解散后回到桌面刷新
+        performGlobalAction(GLOBAL_ACTION_HOME)
+        delay(400)
+        DiagnosticLogger.info(TAG, "撤销：完成，共解散 $dissolved/$expected 个文件夹")
+        return DissolveResult(expected, dissolved)
     }
 
     private suspend fun dragAndDrop(fromBounds: Rect?, toBounds: Rect?) {
@@ -761,29 +1008,88 @@ class AutoAppOrganizerService : AccessibilityService() {
         val toX = toBounds.centerX().toFloat()
         val toY = toBounds.centerY().toFloat()
 
-        val longPressPath = Path().apply {
-            moveTo(fromX, fromY)
-            lineTo(fromX, fromY) // 原地
-        }
-        val dragPath = Path().apply {
-            moveTo(fromX, fromY)
-            lineTo(toX, toY)
+        // ⚠️ continueStroke / willContinue 构造器均为 API 26+，而 minSdk = 24。
+        // 在 Android 7.x（API 24-25）上调用会立即 NoSuchMethodError 崩溃。
+        // 因此按版本分支：
+        //   API 26+：用 continueStroke 链式续接实现「长按 + 拖动」单指手势
+        //   API 24-25：回退为单段慢速拖动（从起点缓慢移到终点，总时长=长按+拖动），
+        //              多数 Launcher 会把起始阶段的缓慢停留识别为长按。
+        val gesture = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // ① 长按阶段（原地保持），willContinue=true 表示指针保持按下不抬起
+            val holdPath = Path().apply {
+                moveTo(fromX, fromY)
+                lineTo(fromX, fromY)
+            }
+            val holdStroke = GestureDescription.StrokeDescription(holdPath, 0, LONG_PRESS_MS, true)
+
+            // ② 拖动阶段（续接 holdStroke；起点须与上一段终点一致），willContinue=false 为末段
+            val dragPath = Path().apply {
+                moveTo(fromX, fromY)
+                lineTo(toX, toY)
+            }
+            val dragStroke = holdStroke.continueStroke(dragPath, LONG_PRESS_MS, DRAG_MS, false)
+
+            // ③ 两段都 addStroke 到同一个 GestureDescription，只 dispatchGesture 一次
+            GestureDescription.Builder()
+                .addStroke(holdStroke)
+                .addStroke(dragStroke)
+                .build()
+        } else {
+            // API 24-25：无 continueStroke，无法分段「长按+拖动」。
+            // 旧回退方案直接 lineTo(toX,toY) —— 手指一开始就移动，长按阈值不会触发，
+            // 导致拖拽前没有进入「编辑模式」，拖拽完全无效。
+            //
+            // 正确做法：在起点画微小密圈停留（半径远小于 touch slop ~8dp，被识别为原地按住），
+            // 让停留段弧长占比 ≈ 长按时长占比，触发 Launcher 长按后再沿路径滑到目标。
+            // 系统按路径总弧长线性分配时间，因此停留段弧长需按拖动距离动态计算。
+            val slop = 4f // 远小于典型 touch slop，确保被判定为原地按住
+            val dragDist = hypot(toX - fromX, toY - fromY).coerceAtLeast(1f)
+            val holdRatio = LONG_PRESS_MS.toFloat() / (LONG_PRESS_MS + DRAG_MS)
+            val holdLength = (holdRatio / (1f - holdRatio)) * dragDist
+            val circumference = (2f * Math.PI.toFloat() * slop)
+            val loops = (holdLength / circumference).toInt().coerceIn(2, 40)
+            val ptsPerLoop = 10
+            val path = Path().apply {
+                moveTo(fromX, fromY)
+                val total = loops * ptsPerLoop
+                var i = 0
+                while (i < total) {
+                    val angle = 2f * Math.PI.toFloat() * i / ptsPerLoop
+                    lineTo(fromX + slop * cos(angle), fromY + slop * sin(angle))
+                    i++
+                }
+                lineTo(fromX, fromY) // 回到起点再出发
+                lineTo(toX, toY)
+            }
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, LONG_PRESS_MS + DRAG_MS))
+                .build()
         }
 
-        val gestureBuilder = GestureDescription.Builder()
-        gestureBuilder.addStroke(GestureDescription.StrokeDescription(longPressPath, 0, 600L))
-        gestureBuilder.addStroke(GestureDescription.StrokeDescription(dragPath, 600L, 400L))
+        val ok = dispatchGestureSync(gesture)
+        if (!ok) {
+            DiagnosticLogger.warn(TAG, "拖拽手势被取消: ($fromX,$fromY)→($toX,$toY)")
+        }
+    }
 
-        val gestureResult = CompletableDeferred<Boolean>()
-        dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
+    /** 同步派发一次手势，返回是否成功完成（true=完成，false=取消/超时）。
+     *  用 withTimeout 保护：若系统不回调（服务断开、手势异常等），
+     *  超时后返回 false，避免协程永久挂起卡住整个流程。 */
+    private suspend fun dispatchGestureSync(gesture: GestureDescription): Boolean {
+        val result = CompletableDeferred<Boolean>()
+        dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
-                gestureResult.complete(true)
+                result.complete(true)
             }
             override fun onCancelled(gestureDescription: GestureDescription?) {
-                gestureResult.complete(false)
+                result.complete(false)
             }
         }, null)
-
-        gestureResult.await()
+        return try {
+            withTimeout(GESTURE_TIMEOUT_MS) { result.await() }
+        } catch (e: TimeoutCancellationException) {
+            DiagnosticLogger.warn(TAG, "手势派发超时（${GESTURE_TIMEOUT_MS}ms 无回调）")
+            false
+        }
     }
 }
