@@ -1,0 +1,38 @@
+name: Bug Report
+description: Report a bug or issue with Auto App Organizer
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the sections below.
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: What happened? What did you expect to happen?
+    validations:
+      required: true
+  - type: input
+    id: android-version
+    attributes:
+      label: Android Version
+      description: e.g. Android 14, MIUI 15
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device / Launcher
+      description: e.g. Xiaomi 14 with MIUI Launcher, Pixel 8 with Pixel Launcher
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce the issue?
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostic Log
+      description: Paste the diagnostic log from the app if available
+      render: shell
