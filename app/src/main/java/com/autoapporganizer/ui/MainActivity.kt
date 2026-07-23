@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.PorterDuff
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -179,15 +178,13 @@ class MainActivity : AppCompatActivity() {
         val ready = isAccessibilityServiceEnabled() && hasOverlayPermission()
         if (ready) {
             binding.chipStatus.background = getDrawable(R.drawable.bg_chip_active)
+            // 用独立 drawable,避免对共享 drawable 设 colorFilter 污染其它视图
             binding.dotStatus.background = getDrawable(R.drawable.bg_dot_primary)
             binding.tvStatus.text = getString(R.string.status_ready)
             binding.tvStatus.setTextColor(getColor(R.color.primary))
         } else {
             binding.chipStatus.background = getDrawable(R.drawable.bg_chip_warning)
-            binding.dotStatus.background = getDrawable(R.drawable.bg_dot_primary)
-            binding.dotStatus.background?.setColorFilter(
-                getColor(R.color.error), PorterDuff.Mode.SRC_IN
-            )
+            binding.dotStatus.background = getDrawable(R.drawable.bg_dot_error)
             binding.tvStatus.text = getString(R.string.status_not_ready)
             binding.tvStatus.setTextColor(getColor(R.color.error))
         }

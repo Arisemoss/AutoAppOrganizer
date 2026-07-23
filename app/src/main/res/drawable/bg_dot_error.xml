@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Error-colored dot for the "not ready" status indicator. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/error" />
+    <size android:width="7dp" android:height="7dp" />
+</shape>
