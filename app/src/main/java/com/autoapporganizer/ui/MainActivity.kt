@@ -43,14 +43,14 @@ class MainActivity : AppCompatActivity() {
                 hideProgress()
 
                 if (success) {
+                    // 直接使用服务返回的 message —— 它对「整理」和「撤销」都准确描述，
+                    // 避免撤销时仍显示「已为你创建 N 个文件夹」这类误导文案。
+                    val sb = Snackbar.make(binding.root, message, Snackbar.LENGTH_LONG)
+                    // 仅在创建了文件夹（整理流程）时才提供「撤销」入口
                     if (folderCount > 0) {
-                        Snackbar.make(binding.root,
-                            getString(R.string.organize_complete, folderCount),
-                            Snackbar.LENGTH_LONG
-                        ).setAction(R.string.btn_undo) { undoOrganize() }.show()
-                    } else {
-                        Snackbar.make(binding.root, "桌面已经很整洁了 ✨", Snackbar.LENGTH_SHORT).show()
+                        sb.setAction(R.string.btn_undo) { undoOrganize() }
                     }
+                    sb.show()
                     if (backupManager.hasBackup()) {
                         binding.btnUndo.visibility = View.VISIBLE
                     }
