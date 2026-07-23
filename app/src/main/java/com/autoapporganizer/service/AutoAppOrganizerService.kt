@@ -22,6 +22,9 @@ import com.autoapporganizer.util.DiagnosticLogger
 import com.autoapporganizer.util.HistoryManager
 import com.autoapporganizer.util.PrefsManager
 import kotlinx.coroutines.*
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * 桌面整理无障碍服务 — Android 15 适配版
@@ -254,12 +257,15 @@ class AutoAppOrganizerService : AccessibilityService() {
                     return@launch
                 }
                 reportProgress(40, "正在扫描已创建的文件夹…")
-                val dissolved = dissolveFolders()
+                val result = dissolveFolders()
                 reportProgress(100, "还原完成")
-                organizeCallback?.onComplete(
-                    true, dissolved,
-                    if (dissolved > 0) "已尝试还原 $dissolved 个文件夹" else "未发现可还原的文件夹"
-                )
+                // 区分三种情况，避免「发现文件夹却解散失败」时显示误导性「未发现」
+                val msg = when {
+                    result.dissolved > 0 -> "已尝试还原 ${result.dissolved} 个文件夹"
+                    result.expected > 0 -> "发现 ${result.expected} 个文件夹但未能解散（该机型移除热区位置可能不同，请手动长按文件夹拖至「移除」）"
+                    else -> "未发现可还原的文件夹"
+                }
+                organizeCallback?.onComplete(true, result.dissolved, msg)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -854,13 +860,27 @@ class AutoAppOrganizerService : AccessibilityService() {
 
     private suspend fun createFolderAndAddItems(items: List<DesktopItem>, category: String) {
         if (items.size < 2) return
+        val firstBounds = items[0].bounds ?: return
+        val secondBounds = items[1].bounds ?: return
         // ① 拖第一个图标到第二个图标上，触发文件夹创建
-        dragAndDrop(items[0].bounds, items[1].bounds)
+        dragAndDrop(firstBounds, secondBounds)
         delay(600)
 
-        // 文件夹位置近似为第二个图标的原位置（多数 Launcher 在被覆盖图标处生成文件夹，
-        // 且后续吸收图标时文件夹本身不再移动）
-        val folderBounds = items[1].bounds
+        // ② 关键：文件夹创建后，某些 Launcher 会把新文件夹重新对齐到网格，而非停留在
+        //    被覆盖图标的精确位置。旧实现把 folderBounds 固定为 items[1].bounds，
+        //    后续拖入会拖到已失效的旧坐标，命中空位。
+        //    这里重扫桌面，取离「第二个图标原位置」最近的文件夹节点作为后续拖入目标。
+        val folderBounds = scanDesktopFolders()
+            .minByOrNull { f ->
+                val b = f.bounds ?: return@minByOrNull Int.MAX_VALUE
+                val dx = b.centerX() - secondBounds.centerX()
+                val dy = b.centerY() - secondBounds.centerY()
+                dx * dx + dy * dy
+            }?.bounds ?: secondBounds
+        DiagnosticLogger.info(
+            TAG, "「$category」文件夹目标坐标: $folderBounds（原第二图标: $secondBounds" +
+                if (folderBounds != secondBounds) "，已被网格重排）" else "）"
+        )
 
         if (items.size > 2) {
             DiagnosticLogger.info(TAG, "开始将剩余 ${items.size - 2} 个图标拖入「$category」文件夹")
@@ -899,23 +919,54 @@ class AutoAppOrganizerService : AccessibilityService() {
         return folders
     }
 
+    /** 撤销解散结果：expected=扫描到的文件夹数，dissolved=成功解散数 */
+    private data class DissolveResult(val expected: Int, val dissolved: Int)
+
+    /**
+     * 不同 Launcher 长按后的「移除/解散」热区位置不同（均位于屏幕顶部，但 Y 偏移各异）。
+     * 旧实现硬编码 heightPixels/8 是 MIUI 的值，在其它机型上会拖到错误位置导致解散失败。
+     * 这里按检测到的桌面包名/设备品牌返回对应的移除目标点。
+     * @return 零宽高 Rect，centerX/centerY 即移除热区坐标点
+     */
+    private fun computeRemoveHotZone(): Rect {
+        val dm = resources.displayMetrics
+        val pkg = detectedLauncherPkg?.lowercase() ?: ""
+        val mfr = Build.MANUFACTURER.lowercase()
+
+        // Y 因子：移除热区距屏幕顶部的比例（越小越靠顶）
+        val yFactor = when {
+            pkg.contains("miui.home") -> 1f / 8f                                      // MIUI/HyperOS
+            pkg.contains("nexuslauncher") || pkg.contains("launcher3") ||
+                pkg.endsWith("google.android.apps.nexuslauncher") -> 1f / 10f          // Pixel/AOSP Launcher3
+            pkg.contains("sec.android") || mfr.contains("samsung") -> 1f / 7f         // 三星 OneUI
+            pkg.contains("huawei") || mfr.contains("huawei") ||
+                mfr.contains("honor") -> 1f / 8f                                      // 华为/荣耀
+            pkg.contains("coloros") || pkg.contains("oppo.launcher") ||
+                mfr.contains("oppo") || mfr.contains("realme") -> 1f / 7f             // OPPO/Realme
+            pkg.contains("vivo") || pkg.contains("bbk") || pkg.contains("funtouch") ||
+                mfr.contains("vivo") -> 1f / 7f                                       // vivo
+            pkg.contains("oneplus") || mfr.contains("oneplus") -> 1f / 8f             // OnePlus
+            else -> 1f / 8f                                                            // 默认（兼容未知 Launcher）
+        }
+        val cx = dm.widthPixels / 2
+        val cy = (dm.heightPixels * yFactor).toInt()
+        DiagnosticLogger.info(TAG, "移除热区(机型=${detectedLauncherPkg ?: "?"}/$mfr): ($cx,$cy) yFactor=$yFactor")
+        return Rect(cx, cy, cx, cy)
+    }
+
     /**
      * 撤销整理：长按每个文件夹后拖到屏幕顶部「移除」区域。
      * 多数 Launcher（含 MIUI）在长按后会显示「移除 / 解散」热区，
      * 把文件夹拖到那里即可解散文件夹并把图标还原到桌面。
-     * @return 成功解散的文件夹数量
+     * @return DissolveResult(expected=扫描到的文件夹数, dissolved=成功解散数)
      */
-    private suspend fun dissolveFolders(): Int {
-        val dm = resources.displayMetrics
-        val removeX = (dm.widthPixels / 2).toFloat()
-        val removeY = (dm.heightPixels / 8f).toFloat() // 屏幕顶部 1/8 处（移除热区）
-        // 用零宽高 Rect 表示目标点，centerX/centerY 即为该点
-        val removeRect = Rect(removeX.toInt(), removeY.toInt(), removeX.toInt(), removeY.toInt())
+    private suspend fun dissolveFolders(): DissolveResult {
+        val removeRect = computeRemoveHotZone()
 
         val expected = scanDesktopFolders().size
         if (expected == 0) {
             DiagnosticLogger.info(TAG, "撤销：未发现文件夹")
-            return 0
+            return DissolveResult(0, 0)
         }
         DiagnosticLogger.info(TAG, "撤销：发现 $expected 个文件夹，开始解散")
 
@@ -933,7 +984,7 @@ class AutoAppOrganizerService : AccessibilityService() {
             // 若连续两轮扫到同一个文件夹（名称+坐标均未变），说明上一次拖拽没能解散它
             // —— 多半是该 Launcher 的「移除热区」位置不同。避免无效死循环，直接跳出。
             if (sig == lastSignature) {
-                DiagnosticLogger.warn(TAG, "撤销：文件夹未被解散（拖拽无效），停止: $sig")
+                DiagnosticLogger.warn(TAG, "撤销：文件夹未被解散（拖拽无效，可能移除热区位置不符），停止: $sig")
                 break
             }
             lastSignature = sig
@@ -945,8 +996,8 @@ class AutoAppOrganizerService : AccessibilityService() {
         // 解散后回到桌面刷新
         performGlobalAction(GLOBAL_ACTION_HOME)
         delay(400)
-        DiagnosticLogger.info(TAG, "撤销：完成，共解散 $dissolved 个文件夹")
-        return dissolved
+        DiagnosticLogger.info(TAG, "撤销：完成，共解散 $dissolved/$expected 个文件夹")
+        return DissolveResult(expected, dissolved)
     }
 
     private suspend fun dragAndDrop(fromBounds: Rect?, toBounds: Rect?) {
@@ -984,9 +1035,30 @@ class AutoAppOrganizerService : AccessibilityService() {
                 .addStroke(dragStroke)
                 .build()
         } else {
-            // API 24-25：3 参构造器 StrokeDescription(Path, long, long) 可用
+            // API 24-25：无 continueStroke，无法分段「长按+拖动」。
+            // 旧回退方案直接 lineTo(toX,toY) —— 手指一开始就移动，长按阈值不会触发，
+            // 导致拖拽前没有进入「编辑模式」，拖拽完全无效。
+            //
+            // 正确做法：在起点画微小密圈停留（半径远小于 touch slop ~8dp，被识别为原地按住），
+            // 让停留段弧长占比 ≈ 长按时长占比，触发 Launcher 长按后再沿路径滑到目标。
+            // 系统按路径总弧长线性分配时间，因此停留段弧长需按拖动距离动态计算。
+            val slop = 4f // 远小于典型 touch slop，确保被判定为原地按住
+            val dragDist = hypot(toX - fromX, toY - fromY).coerceAtLeast(1f)
+            val holdRatio = LONG_PRESS_MS.toFloat() / (LONG_PRESS_MS + DRAG_MS)
+            val holdLength = (holdRatio / (1f - holdRatio)) * dragDist
+            val circumference = (2f * Math.PI.toFloat() * slop)
+            val loops = (holdLength / circumference).toInt().coerceIn(2, 40)
+            val ptsPerLoop = 10
             val path = Path().apply {
                 moveTo(fromX, fromY)
+                val total = loops * ptsPerLoop
+                var i = 0
+                while (i < total) {
+                    val angle = 2f * Math.PI.toFloat() * i / ptsPerLoop
+                    lineTo(fromX + slop * cos(angle), fromY + slop * sin(angle))
+                    i++
+                }
+                lineTo(fromX, fromY) // 回到起点再出发
                 lineTo(toX, toY)
             }
             GestureDescription.Builder()
