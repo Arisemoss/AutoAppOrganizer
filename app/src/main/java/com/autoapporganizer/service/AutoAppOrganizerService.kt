@@ -49,6 +49,11 @@ class AutoAppOrganizerService : AccessibilityService() {
         /** 拖动时长（ms） */
         private const val DRAG_MS = 500L
 
+        /** 单次手势派发等待系统回调的最长时间（ms）。
+         *  超过此时间仍未收到 onCompleted/onCancelled，视为手势派发失效，
+         *  避免协程因系统不回调而永久挂起、卡住整个整理/撤销流程。 */
+        private const val GESTURE_TIMEOUT_MS = 5000L
+
         /** 已知桌面包名列表（检测当前窗口用）—— 必须与 accessibility_service_config.xml 的 packageNames 保持一致 */
         val LAUNCHER_PACKAGES = setOf(
             "com.miui.home",           // 小米 MIUI / HyperOS
@@ -815,10 +820,12 @@ class AutoAppOrganizerService : AccessibilityService() {
         return try {
             val endTime = System.currentTimeMillis()
             val beginTime = endTime - 7 * 24 * 60 * 60 * 1000L
+            // queryUsageStats 文档未保证非 null 返回（权限缺失/区间无效时可能返回 null），
+            // 直接 .associate 会抛 NPE，这里用安全调用兜底。
             val stats = usageStatsManager.queryUsageStats(
                 UsageStatsManager.INTERVAL_DAILY, beginTime, endTime
             )
-            stats.associate { it.packageName to it.totalTimeInForeground }
+            stats?.associate { it.packageName to it.totalTimeInForeground } ?: emptyMap()
         } catch (e: Exception) {
             DiagnosticLogger.warn(TAG, "无法获取使用统计: ${e.message}")
             emptyMap()
@@ -950,40 +957,42 @@ class AutoAppOrganizerService : AccessibilityService() {
         val toX = toBounds.centerX().toFloat()
         val toY = toBounds.centerY().toFloat()
 
-        // ⚠️ 关键：必须用 continueStroke 链式续接来实现「长按 + 拖动」单指手势。
-        // 之前用两个独立的 StrokeDescription 分两次 dispatchGesture 派发 ——
-        // 系统会把第二段当作一个新的、独立的触摸点（另一个指针落下），
-        // 即「第一指按住 + 第二指滑动」的多指场景，而非单指长按后连续拖动，
-        // 因此拖拽完全无效。
-        //
-        // 正确做法（Android API 26+）：
-        //   ① 第一段 stroke：在起点长按保持，willContinue=true（指针保持按下不抬起）
-        //   ② 调用 holdStroke.continueStroke(dragPath, ...) 生成续接段，
-        //      系统据此识别为同一根手指的连续动作
-        //   ③ 两段都 addStroke 到同一个 GestureDescription，只 dispatchGesture 一次
+        // ⚠️ continueStroke / willContinue 构造器均为 API 26+，而 minSdk = 24。
+        // 在 Android 7.x（API 24-25）上调用会立即 NoSuchMethodError 崩溃。
+        // 因此按版本分支：
+        //   API 26+：用 continueStroke 链式续接实现「长按 + 拖动」单指手势
+        //   API 24-25：回退为单段慢速拖动（从起点缓慢移到终点，总时长=长按+拖动），
+        //              多数 Launcher 会把起始阶段的缓慢停留识别为长按。
+        val gesture = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // ① 长按阶段（原地保持），willContinue=true 表示指针保持按下不抬起
+            val holdPath = Path().apply {
+                moveTo(fromX, fromY)
+                lineTo(fromX, fromY)
+            }
+            val holdStroke = GestureDescription.StrokeDescription(holdPath, 0, LONG_PRESS_MS, true)
 
-        // ① 长按阶段（原地保持）
-        val holdPath = Path().apply {
-            moveTo(fromX, fromY)
-            lineTo(fromX, fromY)
+            // ② 拖动阶段（续接 holdStroke；起点须与上一段终点一致），willContinue=false 为末段
+            val dragPath = Path().apply {
+                moveTo(fromX, fromY)
+                lineTo(toX, toY)
+            }
+            val dragStroke = holdStroke.continueStroke(dragPath, LONG_PRESS_MS, DRAG_MS, false)
+
+            // ③ 两段都 addStroke 到同一个 GestureDescription，只 dispatchGesture 一次
+            GestureDescription.Builder()
+                .addStroke(holdStroke)
+                .addStroke(dragStroke)
+                .build()
+        } else {
+            // API 24-25：3 参构造器 StrokeDescription(Path, long, long) 可用
+            val path = Path().apply {
+                moveTo(fromX, fromY)
+                lineTo(toX, toY)
+            }
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, LONG_PRESS_MS + DRAG_MS))
+                .build()
         }
-        val holdStroke = GestureDescription.StrokeDescription(holdPath, 0, LONG_PRESS_MS, true)
-
-        // ② 拖动阶段（续接 holdStroke；起点须与上一段终点一致）
-        val dragPath = Path().apply {
-            moveTo(fromX, fromY)
-            lineTo(toX, toY)
-        }
-        // continueStroke 返回的续接段必须显式 addStroke 才会包含在手势中；
-        // willContinue=false 表示这是整条手势链的最后一段。
-        @Suppress("NewApi")
-        val dragStroke = holdStroke.continueStroke(dragPath, LONG_PRESS_MS, DRAG_MS, false)
-
-        // ③ 合并为一次手势派发：两段都 addStroke 到同一个 GestureDescription
-        val gesture = GestureDescription.Builder()
-            .addStroke(holdStroke)
-            .addStroke(dragStroke)
-            .build()
 
         val ok = dispatchGestureSync(gesture)
         if (!ok) {
@@ -991,7 +1000,9 @@ class AutoAppOrganizerService : AccessibilityService() {
         }
     }
 
-    /** 同步派发一次手势，返回是否成功完成（true=完成，false=取消） */
+    /** 同步派发一次手势，返回是否成功完成（true=完成，false=取消/超时）。
+     *  用 withTimeout 保护：若系统不回调（服务断开、手势异常等），
+     *  超时后返回 false，避免协程永久挂起卡住整个流程。 */
     private suspend fun dispatchGestureSync(gesture: GestureDescription): Boolean {
         val result = CompletableDeferred<Boolean>()
         dispatchGesture(gesture, object : GestureResultCallback() {
@@ -1002,6 +1013,11 @@ class AutoAppOrganizerService : AccessibilityService() {
                 result.complete(false)
             }
         }, null)
-        return result.await()
+        return try {
+            withTimeout(GESTURE_TIMEOUT_MS) { result.await() }
+        } catch (e: TimeoutCancellationException) {
+            DiagnosticLogger.warn(TAG, "手势派发超时（${GESTURE_TIMEOUT_MS}ms 无回调）")
+            false
+        }
     }
 }
