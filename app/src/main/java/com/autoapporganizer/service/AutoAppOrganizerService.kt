@@ -227,25 +227,42 @@ class AutoAppOrganizerService : AccessibilityService() {
 
     /** 撤销整理 */
     fun undoOrganize() {
+        // 与整理流程共享 isOrganizing 互斥锁，避免整理中触发撤销或撤销中再次撤销，
+        // 否则两个协程会同时派发手势，互相干扰。
+        if (isOrganizing) {
+            organizeCallback?.onComplete(false, 0, "正在执行操作，请稍候")
+            return
+        }
         serviceScope.launch {
-            val backup = backupManager.loadBackup() ?: currentBackup
-            if (backup == null) {
-                organizeCallback?.onComplete(false, 0, "没有备份数据")
-                return@launch
+            isOrganizing = true
+            organizeProgress = 0
+            try {
+                val backup = backupManager.loadBackup() ?: currentBackup
+                if (backup == null) {
+                    organizeCallback?.onComplete(false, 0, "没有备份数据")
+                    return@launch
+                }
+                reportProgress(10, "正在返回桌面…")
+                val onDesktop = goToHomeScreen()
+                if (!onDesktop) {
+                    organizeCallback?.onComplete(false, 0, "无法切换到桌面，撤销失败")
+                    return@launch
+                }
+                reportProgress(40, "正在扫描已创建的文件夹…")
+                val dissolved = dissolveFolders()
+                reportProgress(100, "还原完成")
+                organizeCallback?.onComplete(
+                    true, dissolved,
+                    if (dissolved > 0) "已尝试还原 $dissolved 个文件夹" else "未发现可还原的文件夹"
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DiagnosticLogger.error(TAG, "撤销异常: ${e.message}")
+                organizeCallback?.onComplete(false, 0, "撤销失败: ${e.message}")
+            } finally {
+                isOrganizing = false
             }
-            reportProgress(10, "正在返回桌面…")
-            val onDesktop = goToHomeScreen()
-            if (!onDesktop) {
-                organizeCallback?.onComplete(false, 0, "无法切换到桌面，撤销失败")
-                return@launch
-            }
-            reportProgress(40, "正在扫描已创建的文件夹…")
-            val dissolved = dissolveFolders()
-            reportProgress(100, "还原完成")
-            organizeCallback?.onComplete(
-                true, dissolved,
-                if (dissolved > 0) "已尝试还原 $dissolved 个文件夹" else "未发现可还原的文件夹"
-            )
         }
     }
 
@@ -267,19 +284,23 @@ class AutoAppOrganizerService : AccessibilityService() {
                 DiagnosticLogger.info(TAG, "当前窗口包名: ${root.packageName}")
                 DiagnosticLogger.info(TAG, "当前窗口类名: ${root.className}")
                 DiagnosticLogger.info(TAG, "是否桌面: ${root.packageName in LAUNCHER_PACKAGES}")
+                root.recycle()
 
-                dumpNodeTree(root)
+                // scanDesktop 与 dumpNodeTree 各自独立调用 rootInActiveWindow 获取全新快照，
+                // 避免一方 recycle 子节点后另一方复用同一缓存对象导致 getChild 失效。
                 val items = scanDesktop()
+                val dumpRoot = rootInActiveWindow
+                dumpNodeTree(dumpRoot)
+                dumpRoot?.recycle()
 
                 DiagnosticLogger.info(TAG, "=== 诊断完成: 找到 ${items.size} 个APP ===")
                 items.forEachIndexed { i, item ->
                     DiagnosticLogger.info(TAG, "  [${i+1}] ${item.name} → ${item.packageName ?: "?"}")
                 }
 
-                if (items.isEmpty() && root.packageName !in LAUNCHER_PACKAGES) {
-                    DiagnosticLogger.warn(TAG, "当前不在桌面！请手动按 Home 返回桌面后重试")
+                if (items.isEmpty()) {
+                    DiagnosticLogger.warn(TAG, "未发现图标 — 若不在桌面请手动按 Home 返回桌面后重试")
                 }
-                root.recycle()
             } catch (e: Exception) {
                 DiagnosticLogger.error(TAG, "诊断异常: ${e.message}")
             }
@@ -830,19 +851,22 @@ class AutoAppOrganizerService : AccessibilityService() {
         dragAndDrop(items[0].bounds, items[1].bounds)
         delay(600)
 
-        // 文件夹位置近似为第二个图标的原位置（多数 Launcher 在被覆盖图标处生成文件夹）
+        // 文件夹位置近似为第二个图标的原位置（多数 Launcher 在被覆盖图标处生成文件夹，
+        // 且后续吸收图标时文件夹本身不再移动）
         val folderBounds = items[1].bounds
 
         if (items.size > 2) {
-            // ② 关键：创建文件夹后桌面会自动重排，剩余图标的坐标已变化。
-            //    必须重新扫描获取最新坐标，否则后续拖拽会拖到错误的位置（旧坐标）。
-            val freshItems = scanDesktop().associateBy { it.packageName ?: it.name ?: "" }
-            DiagnosticLogger.info(TAG, "重扫获取 ${freshItems.size} 个图标的新坐标，继续拖入「$category」")
+            DiagnosticLogger.info(TAG, "开始将剩余 ${items.size - 2} 个图标拖入「$category」文件夹")
             for (i in 2 until items.size) {
                 val target = items[i]
                 val key = target.packageName ?: target.name ?: ""
-                // 优先用最新坐标；找不到则回退到旧坐标（聊胜于无）
-                val freshBounds = freshItems[key]?.bounds ?: target.bounds
+                // 关键：每拖入一个图标，桌面都会自动重排，剩余图标的坐标随之变化。
+                // 旧实现只在循环前重扫一次，导致第 3 个之后的图标被拖到失效的旧坐标上，
+                // 进而拖空或拖错位置。这里改为每轮重新扫描获取最新坐标。
+                val freshItems = scanDesktop().associateBy { it.packageName ?: it.name ?: "" }
+                // 优先用最新坐标；找不到（图标已被前一轮误拖入文件夹等）则跳过，避免拖空。
+                val freshBounds = freshItems[key]?.bounds ?: continue
+                DiagnosticLogger.debug(TAG, "拖入「$category」: ${target.name} → $freshBounds")
                 dragAndDrop(freshBounds, folderBounds)
                 delay(400)
             }
@@ -875,23 +899,38 @@ class AutoAppOrganizerService : AccessibilityService() {
      * @return 成功解散的文件夹数量
      */
     private suspend fun dissolveFolders(): Int {
-        val folders = scanDesktopFolders()
-        if (folders.isEmpty()) {
-            DiagnosticLogger.info(TAG, "撤销：未发现文件夹")
-            return 0
-        }
-        DiagnosticLogger.info(TAG, "撤销：发现 ${folders.size} 个文件夹，开始解散")
-
         val dm = resources.displayMetrics
         val removeX = (dm.widthPixels / 2).toFloat()
         val removeY = (dm.heightPixels / 8f).toFloat() // 屏幕顶部 1/8 处（移除热区）
         // 用零宽高 Rect 表示目标点，centerX/centerY 即为该点
         val removeRect = Rect(removeX.toInt(), removeY.toInt(), removeX.toInt(), removeY.toInt())
 
+        val expected = scanDesktopFolders().size
+        if (expected == 0) {
+            DiagnosticLogger.info(TAG, "撤销：未发现文件夹")
+            return 0
+        }
+        DiagnosticLogger.info(TAG, "撤销：发现 $expected 个文件夹，开始解散")
+
         var dissolved = 0
-        for (folder in folders) {
-            val bounds = folder.bounds ?: continue
-            DiagnosticLogger.info(TAG, "撤销：解散文件夹 '${folder.name}' ${bounds}")
+        var lastSignature: String? = null
+        // 关键：解散一个文件夹后，其内部图标会散落回桌面，导致其它文件夹坐标变化，
+        // 旧实现一次性捕获所有文件夹坐标后逐个拖拽，第 2 个起就用了失效坐标。
+        // 这里改为每轮重新扫描，取首个文件夹的最新坐标进行解散。
+        while (dissolved < expected) {
+            val folders = scanDesktopFolders()
+            if (folders.isEmpty()) break
+            val folder = folders.first()
+            val bounds = folder.bounds ?: break
+            val sig = "${folder.name}@$bounds"
+            // 若连续两轮扫到同一个文件夹（名称+坐标均未变），说明上一次拖拽没能解散它
+            // —— 多半是该 Launcher 的「移除热区」位置不同。避免无效死循环，直接跳出。
+            if (sig == lastSignature) {
+                DiagnosticLogger.warn(TAG, "撤销：文件夹未被解散（拖拽无效），停止: $sig")
+                break
+            }
+            lastSignature = sig
+            DiagnosticLogger.info(TAG, "撤销：解散文件夹 '${folder.name}' $bounds (第 ${dissolved + 1}/$expected)")
             dragAndDrop(bounds, removeRect)
             delay(600)
             dissolved++
@@ -911,37 +950,44 @@ class AutoAppOrganizerService : AccessibilityService() {
         val toX = toBounds.centerX().toFloat()
         val toY = toBounds.centerY().toFloat()
 
-        // ⚠️ 关键：必须用「分阶段手势」(willContinue) 来实现长按 + 拖动。
-        // 之前把两根 Stroke 放进同一个 GestureDescription —— 系统会把它当作
-        // 多指同时触摸（multitouch），而不是单指长按后拖动，因此拖拽完全无效。
+        // ⚠️ 关键：必须用 continueStroke 链式续接来实现「长按 + 拖动」单指手势。
+        // 之前用两个独立的 StrokeDescription 分两次 dispatchGesture 派发 ——
+        // 系统会把第二段当作一个新的、独立的触摸点（另一个指针落下），
+        // 即「第一指按住 + 第二指滑动」的多指场景，而非单指长按后连续拖动，
+        // 因此拖拽完全无效。
         //
-        // 正确做法：
-        //   ① 第一段手势：在起点长按保持（willContinue=true，表示后续还有续接段）
-        //   ② 第二段手势：从起点拖到终点（willContinue=false，结束整条手势链）
-        // 两段通过 dispatchGesture 顺序派发，系统会把它识别为一条连续的单指手势。
+        // 正确做法（Android API 26+）：
+        //   ① 第一段 stroke：在起点长按保持，willContinue=true（指针保持按下不抬起）
+        //   ② 调用 holdStroke.continueStroke(dragPath, ...) 生成续接段，
+        //      系统据此识别为同一根手指的连续动作
+        //   ③ 两段都 addStroke 到同一个 GestureDescription，只 dispatchGesture 一次
 
-        // ① 长按阶段
+        // ① 长按阶段（原地保持）
         val holdPath = Path().apply {
             moveTo(fromX, fromY)
-            lineTo(fromX, fromY) // 原地保持，触发长按
+            lineTo(fromX, fromY)
         }
         val holdStroke = GestureDescription.StrokeDescription(holdPath, 0, LONG_PRESS_MS, true)
 
-        if (!dispatchGestureSync(GestureDescription.Builder().addStroke(holdStroke).build())) {
-            DiagnosticLogger.warn(TAG, "长按手势被取消: ($fromX,$fromY)")
-            return
-        }
-
-        // ② 拖动阶段（续接上一段）
+        // ② 拖动阶段（续接 holdStroke；起点须与上一段终点一致）
         val dragPath = Path().apply {
             moveTo(fromX, fromY)
             lineTo(toX, toY)
         }
-        val dragStroke = GestureDescription.StrokeDescription(dragPath, 0, DRAG_MS)
+        // continueStroke 返回的续接段必须显式 addStroke 才会包含在手势中；
+        // willContinue=false 表示这是整条手势链的最后一段。
+        @Suppress("NewApi")
+        val dragStroke = holdStroke.continueStroke(dragPath, LONG_PRESS_MS, DRAG_MS, false)
 
-        val ok = dispatchGestureSync(GestureDescription.Builder().addStroke(dragStroke).build())
+        // ③ 合并为一次手势派发：两段都 addStroke 到同一个 GestureDescription
+        val gesture = GestureDescription.Builder()
+            .addStroke(holdStroke)
+            .addStroke(dragStroke)
+            .build()
+
+        val ok = dispatchGestureSync(gesture)
         if (!ok) {
-            DiagnosticLogger.warn(TAG, "拖动手势被取消: ($fromX,$fromY)→($toX,$toY)")
+            DiagnosticLogger.warn(TAG, "拖拽手势被取消: ($fromX,$fromY)→($toX,$toY)")
         }
     }
 
