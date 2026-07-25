@@ -20,6 +20,12 @@ import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.CategoryMatcher
 import com.autoapporganizer.util.DiagnosticLogger
 import com.autoapporganizer.util.HistoryManager
+import com.autoapporganizer.core.action.GestureExecutor
+import com.autoapporganizer.core.agent.AgentRunner
+import com.autoapporganizer.core.model.CloudVlmService
+import com.autoapporganizer.core.perception.AccessibilityChannelImpl
+import com.autoapporganizer.core.perception.VisionChannelImpl
+import com.autoapporganizer.task.organize.DesktopOrganizeTask
 import com.autoapporganizer.util.PrefsManager
 import kotlinx.coroutines.*
 import kotlin.math.cos
@@ -314,6 +320,62 @@ class AutoAppOrganizerService : AccessibilityService() {
                 }
             } catch (e: Exception) {
                 DiagnosticLogger.error(TAG, "诊断异常: ${e.message}")
+            }
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    // P1 视觉 Agent 基座：视觉整理入口
+    // ──────────────────────────────────────────────
+
+    /**
+     * 视觉整理 —— 使用视觉 + 无障碍混合感知驱动 ReAct Agent 整理桌面。
+     * 当 VLM 未配置时退化为纯无障碍模式。
+     */
+    fun startVisionOrganize() {
+        if (isOrganizing) {
+            organizeCallback?.onComplete(false, 0, "正在执行操作，请稍候")
+            return
+        }
+        serviceScope.launch {
+            isOrganizing = true
+            organizeProgress = 0
+            try {
+                DiagnosticLogger.info(TAG, "=== 视觉整理启动 ===")
+                val vlm = CloudVlmService(prefs)
+                DiagnosticLogger.info(TAG, "VLM: provider=${prefs.vlmProvider} available=${vlm.isAvailable}")
+
+                val perceptionChannel = AccessibilityChannelImpl(this@AutoAppOrganizerService)
+                val visionChannel = VisionChannelImpl(perceptionChannel, vlm)
+                val gestureExecutor = GestureExecutor(this@AutoAppOrganizerService)
+                val runner = AgentRunner(gestureExecutor, perceptionChannel, visionChannel)
+                val task = DesktopOrganizeTask(perceptionChannel, visionChannel, this@AutoAppOrganizerService, prefs)
+
+                // 整理前返回桌面
+                if (prefs.autoReturnHome) {
+                    reportProgress(5, "正在返回桌面…")
+                    val onDesktop = goToHomeScreen()
+                    if (!onDesktop) {
+                        organizeCallback?.onComplete(false, 0, "无法切换到桌面，请手动返回桌面后重试")
+                        return@launch
+                    }
+                }
+
+                val result = runner.run(task) { progress, msg ->
+                    reportProgress(progress, msg)
+                }
+
+                val folders = task.getFoldersCreated()
+                reportProgress(100, result.message)
+                organizeCallback?.onComplete(result.success, folders, result.message)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DiagnosticLogger.error(TAG, "视觉整理异常: ${e.message}")
+                e.printStackTrace()
+                organizeCallback?.onComplete(false, 0, "视觉整理失败: ${e.message}")
+            } finally {
+                isOrganizing = false
             }
         }
     }

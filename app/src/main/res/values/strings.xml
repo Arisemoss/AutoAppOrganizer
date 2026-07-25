@@ -42,6 +42,10 @@
     <string name="action_settings_desc">分类与偏好</string>
     <string name="action_undo">撤销整理</string>
     <string name="action_undo_desc">还原桌面</string>
+    <string name="action_vision_organize">视觉整理</string>
+    <string name="action_vision_organize_desc">AI视觉驱动</string>
+    <string name="action_model_config">模型配置</string>
+    <string name="action_model_config_desc">VLM设置</string>
 
     <!-- ===== Diagnostics ===== -->
     <string name="btn_diagnose">诊断桌面</string>
@@ -66,7 +70,7 @@
     <!-- ===== About ===== -->
     <string name="about_title">关于</string>
     <string name="about_author">作者：云彩烟花</string>
-    <string name="about_version">版本：1.10</string>
+    <string name="about_version">版本：1.11</string>
     <string name="about_copyright">© 2025 云彩烟花 · 保留所有权利</string>
     <string name="about_desc">为拥挤的桌面带来秩序的无障碍小工具。</string>
 
@@ -95,4 +99,18 @@
     <string name="history_undo">撤销</string>
     <string name="history_delete">删除</string>
     <string name="history_deleted">已删除该记录</string>
+
+    <!-- ===== Vision / VLM ===== -->
+    <string name="vlm_config_title">视觉模型配置</string>
+    <string name="vlm_provider">提供商</string>
+    <string name="vlm_api_key">API Key</string>
+    <string name="vlm_endpoint">端点（可选）</string>
+    <string name="vlm_model">模型名</string>
+    <string name="vlm_provider_none">不使用（纯无障碍）</string>
+    <string name="vlm_provider_openai">OpenAI 兼容</string>
+    <string name="vlm_provider_gemini">Gemini</string>
+    <string name="vlm_provider_glm">GLM-4V</string>
+    <string name="vlm_hint_endpoint">留空使用默认端点</string>
+    <string name="vlm_hint_model">如 gpt-4o / gemini-2.0-flash / glm-4v</string>
+    <string name="vlm_saved">模型配置已保存</string>
 </resources>

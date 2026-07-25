@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import com.autoapporganizer.R
 import com.autoapporganizer.databinding.ActivityMainBinding
 import com.autoapporganizer.service.AutoAppOrganizerService
+import com.autoapporganizer.core.model.CloudVlmService
 import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.DiagnosticLogger
 import com.autoapporganizer.util.HistoryManager
@@ -105,6 +106,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 操作网格
+        // P1 视觉 Agent：视觉整理 + 模型配置
+        binding.actionVisionOrganize.setOnClickListener { startVisionOrganize() }
+        binding.actionModelConfig.setOnClickListener {
+            startActivity(Intent(this, VlmConfigActivity::class.java))
+        }
         binding.actionDiagnose.setOnClickListener { runDiagnostic() }
         binding.actionHistory.setOnClickListener {
             startActivity(Intent(this, HistoryActivity::class.java))
@@ -366,6 +372,16 @@ class MainActivity : AppCompatActivity() {
         showProgress()
         binding.tvProgress.text = "正在还原…"
         service.undoOrganize()
+    }
+
+    private fun startVisionOrganize() {
+        val service = AutoAppOrganizerService.instance ?: run {
+            Toast.makeText(this, R.string.permission_needed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        showProgress()
+        binding.tvProgress.text = "视觉整理中…"
+        service.startVisionOrganize()
     }
 
     private fun showProgress() {
