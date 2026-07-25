@@ -4,6 +4,8 @@
 
     <!-- 悬浮窗权限（Android 15 + 小米必需） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 网络权限（VLM 云端调用） -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- 使用情况访问（智能分类） -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
@@ -30,6 +32,11 @@
 
         <activity
             android:name=".ui.SettingsActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.MainActivity" />
+
+        <activity
+            android:name=".ui.VlmConfigActivity"
             android:exported="false"
             android:parentActivityName=".ui.MainActivity" />
 

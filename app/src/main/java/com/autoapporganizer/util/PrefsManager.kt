@@ -26,6 +26,27 @@ class PrefsManager(context: Context) {
         get() = prefs.getBoolean(KEY_AUTO_HOME, true)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_HOME, value).apply()
 
+    // P1 视觉 Agent：VLM 配置
+    /** VLM 提供商：none / openai / gemini / glm */
+    var vlmProvider: String
+        get() = prefs.getString(KEY_VLM_PROVIDER, DEFAULT_VLM_PROVIDER) ?: DEFAULT_VLM_PROVIDER
+        set(value) = prefs.edit().putString(KEY_VLM_PROVIDER, value).apply()
+
+    /** VLM API Key */
+    var vlmApiKey: String
+        get() = prefs.getString(KEY_VLM_API_KEY, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_VLM_API_KEY, value).apply()
+
+    /** VLM 端点（留空则用提供商默认） */
+    var vlmEndpoint: String
+        get() = prefs.getString(KEY_VLM_ENDPOINT, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_VLM_ENDPOINT, value).apply()
+
+    /** VLM 模型名 */
+    var vlmModel: String
+        get() = prefs.getString(KEY_VLM_MODEL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_VLM_MODEL, value).apply()
+
     companion object {
         private const val PREFS_NAME = "auto_organizer_prefs"
 
@@ -35,5 +56,12 @@ class PrefsManager(context: Context) {
 
         const val DEFAULT_MIN_FOLDER_SIZE = 2
         const val DEFAULT_RARELY_USED_MIN = 1 // 分钟
+
+        // VLM keys
+        const val KEY_VLM_PROVIDER = "vlm_provider"
+        const val KEY_VLM_API_KEY = "vlm_api_key"
+        const val KEY_VLM_ENDPOINT = "vlm_endpoint"
+        const val KEY_VLM_MODEL = "vlm_model"
+        const val DEFAULT_VLM_PROVIDER = "none"
     }
 }
