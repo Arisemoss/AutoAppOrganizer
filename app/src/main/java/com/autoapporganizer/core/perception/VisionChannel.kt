@@ -21,8 +21,12 @@ interface VisionChannel {
      * Run a vision pass specialized for finding app icons on the home screen, returning
      * the detections as [ScreenElement]s with [ScreenElement.Source.VISION].
      * Returns an empty list when the VLM is unavailable or the analysis fails.
+     *
+     * Renamed from `scan()` to make the cost obvious at the call site: this triggers a
+     * cloud VLM call (1-3s + API fee), unlike [AccessibilityChannel.scanElements] which
+     * only walks the local accessibility tree.
      */
-    suspend fun scan(): List<ScreenElement>
+    suspend fun detectIcons(): List<ScreenElement>
 }
 
 /**
@@ -62,7 +66,7 @@ class VisionChannelImpl(
         return vlm.analyze(bitmap, prompt)
     }
 
-    override suspend fun scan(): List<ScreenElement> {
+    override suspend fun detectIcons(): List<ScreenElement> {
         if (!vlm.isAvailable) {
             DiagnosticLogger.debug(TAG, "scan: VLM not available, returning empty list")
             return emptyList()

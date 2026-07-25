@@ -16,7 +16,6 @@ import androidx.lifecycle.lifecycleScope
 import com.autoapporganizer.R
 import com.autoapporganizer.databinding.ActivityMainBinding
 import com.autoapporganizer.service.AutoAppOrganizerService
-import com.autoapporganizer.core.model.CloudVlmService
 import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.DiagnosticLogger
 import com.autoapporganizer.util.HistoryManager
