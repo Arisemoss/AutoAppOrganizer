@@ -66,8 +66,8 @@ class DesktopOrganizeTask(
     // ──────────────────────────────────────────────
 
     override suspend fun describe(accessibility: AccessibilityChannel, vision: VisionChannel): String {
-        val perception = accessibility.scan()
-        val visionItems = vision.scan()
+        val perception = accessibility.scanElements()
+        val visionItems = vision.detectIcons()
         DiagnosticLogger.info(TAG, "describe: a11y=${perception.size} vision=${visionItems.size}")
 
         // Merge: prefer accessibility elements, supplement with vision-only ones.
@@ -169,7 +169,6 @@ class DesktopOrganizeTask(
         val errors = if (!result) state.errors + "Action ${action.describe()} failed at step ${state.step}" else state.errors
 
         val newContext = state.context.toMutableMap()
-        var newFolders = state.foldersCreated
         var newItems = state.itemsOrganized
 
         when (phase) {
@@ -203,9 +202,6 @@ class DesktopOrganizeTask(
                     val cat = state.context[CATEGORY] as? String
                     val elements = categorized[cat].orEmpty()
                     val currentDragIndex = (state.context[DRAG_INDEX] as? Int) ?: 2
-                    // IMPORTANT: use dragIndex-2 to account for anchor (index 0) and
-                    // the first dragged item (index 1) in 0-based counting.
-                    val adjustedIndex = (currentDragIndex - 2).coerceAtLeast(0)
                     newContext[DRAG_INDEX] = currentDragIndex + 1
                     newItems++
 
@@ -232,7 +228,6 @@ class DesktopOrganizeTask(
 
         return state.copy(
             step = state.step + 1,
-            foldersCreated = newFolders,
             itemsOrganized = newItems,
             errors = errors,
             context = newContext
@@ -242,6 +237,20 @@ class DesktopOrganizeTask(
     override fun isComplete(state: TaskState): Boolean {
         val phase = state.context[PHASE] as? String
         return phase == "done" || categoryQueue.isEmpty() || state.errors.size >= 5
+    }
+
+    /**
+     * Vision is only useful when we need to *locate* something visually:
+     *  - "scan"  : the initial icon scan already happened in [describe]; a per-step vision
+     *              pass helps when accessibility missed icons and we want to supplement.
+     *  - "press" : a folder was just created and may have been re-gridded; a vision pass
+     *              can pin down its real bounds when accessibility fails.
+     * "drag" and "next" operate on coordinates already in [categorized] / [currentFolderBounds]
+     * and do not benefit from another cloud call, so we skip them.
+     */
+    override fun needsVision(state: TaskState): Boolean {
+        val phase = state.context[PHASE] as? String ?: "scan"
+        return phase == "scan" || phase == "press"
     }
 
     override fun getFoldersCreated(): Int = foldersCreated

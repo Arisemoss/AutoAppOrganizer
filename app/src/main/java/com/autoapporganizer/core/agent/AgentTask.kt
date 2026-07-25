@@ -8,15 +8,18 @@ import com.autoapporganizer.core.perception.VisionChannel
 /**
  * Mutable state carried across ReAct iterations by [AgentRunner].
  *
+ * NOTE: folder count is intentionally NOT tracked here. [AgentTask.getFoldersCreated]
+ * is the single source of truth (typically backed by a task-local counter), because
+ * folder creation is a task-specific event that does not map cleanly onto a per-step
+ * state field. Keeping it out of [TaskState] avoids a second, divergent counter.
+ *
  * @param step           Current step index (0-based).
- * @param foldersCreated Number of folders successfully created so far.
  * @param itemsOrganized Number of icons successfully dragged into folders.
  * @param errors         Accumulated error messages.
  * @param context        Free-form bag for task-specific flags (e.g. "phase", "currentCategory").
  */
 data class TaskState(
     val step: Int = 0,
-    val foldersCreated: Int = 0,
     val itemsOrganized: Int = 0,
     val errors: List<String> = emptyList(),
     val context: Map<String, Any> = emptyMap()
@@ -57,6 +60,17 @@ interface AgentTask {
 
     /** Check if the task is complete. */
     fun isComplete(state: TaskState): Boolean
+
+    /**
+     * Whether the next reason() iteration needs a fresh VLM pass for [state].
+     *
+     * Default is `false`: most steps only need the accessibility tree, and the
+     * caller ([AgentRunner]) may reuse the most recent [VisionResult] when this
+     * returns `false`. Tasks that genuinely need a vision pass (e.g. an initial
+     * icon scan or locating a newly-created folder) should override and return
+     * `true` for the relevant phase.
+     */
+    fun needsVision(state: TaskState): Boolean = false
 
     /** Get number of folders created (for reporting). */
     fun getFoldersCreated(): Int

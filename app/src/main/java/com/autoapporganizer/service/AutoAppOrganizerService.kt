@@ -2,15 +2,10 @@ package com.autoapporganizer.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.accessibilityservice.GestureDescription
 import android.app.usage.UsageStatsManager
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
-import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.autoapporganizer.model.DesktopBackup
@@ -26,11 +21,9 @@ import com.autoapporganizer.core.model.CloudVlmService
 import com.autoapporganizer.core.perception.AccessibilityChannelImpl
 import com.autoapporganizer.core.perception.VisionChannelImpl
 import com.autoapporganizer.task.organize.DesktopOrganizeTask
+import com.autoapporganizer.util.NodeDumper
 import com.autoapporganizer.util.PrefsManager
 import kotlinx.coroutines.*
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.sin
 
 /**
  * 桌面整理无障碍服务 — Android 15 适配版
@@ -58,10 +51,10 @@ class AutoAppOrganizerService : AccessibilityService() {
         /** 拖动时长（ms） */
         private const val DRAG_MS = 500L
 
-        /** 单次手势派发等待系统回调的最长时间（ms）。
-         *  超过此时间仍未收到 onCompleted/onCancelled，视为手势派发失效，
-         *  避免协程因系统不回调而永久挂起、卡住整个整理/撤销流程。 */
-        private const val GESTURE_TIMEOUT_MS = 5000L
+        // NOTE: GESTURE_TIMEOUT_MS used to live here for the local dispatchGestureSync().
+        // It was removed when dragAndDrop was consolidated into GestureExecutor (#7), which
+        // carries its own GESTURE_TIMEOUT_MS. If you need to tune the gesture timeout,
+        // see GestureExecutor.GESTURE_TIMEOUT_MS.
 
         /** 已知桌面包名列表（检测当前窗口用）—— 必须与 accessibility_service_config.xml 的 packageNames 保持一致 */
         val LAUNCHER_PACKAGES = setOf(
@@ -104,6 +97,14 @@ class AutoAppOrganizerService : AccessibilityService() {
     private lateinit var historyManager: HistoryManager
     private lateinit var prefs: PrefsManager
 
+    /**
+     * Shared gesture executor for both the legacy organize path ([dragAndDrop]) and the
+     * Agent framework ([AgentRunner] constructs its own, but the legacy path now also uses
+     * this single implementation — see #7). Holding it as a field avoids re-creating it
+     * per organize call.
+     */
+    private lateinit var gestureExecutor: GestureExecutor
+
     private var currentBackup: DesktopBackup? = null
 
     override fun onCreate() {
@@ -114,6 +115,7 @@ class AutoAppOrganizerService : AccessibilityService() {
         historyManager = HistoryManager(this)
         prefs = PrefsManager(this)
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        gestureExecutor = GestureExecutor(this)
     }
 
     override fun onServiceConnected() {
@@ -347,7 +349,6 @@ class AutoAppOrganizerService : AccessibilityService() {
 
                 val perceptionChannel = AccessibilityChannelImpl(this@AutoAppOrganizerService)
                 val visionChannel = VisionChannelImpl(perceptionChannel, vlm)
-                val gestureExecutor = GestureExecutor(this@AutoAppOrganizerService)
                 val runner = AgentRunner(gestureExecutor, perceptionChannel, visionChannel)
                 val task = DesktopOrganizeTask(perceptionChannel, visionChannel, this@AutoAppOrganizerService, prefs)
 
@@ -445,7 +446,7 @@ class AutoAppOrganizerService : AccessibilityService() {
     // ② 通用图标扫描
     // ──────────────────────────────────────────────
 
-    private fun scanDesktop(): List<DesktopItem> {
+    private fun scanDesktop(verbose: Boolean = true): List<DesktopItem> {
         val root = rootInActiveWindow
         if (root == null) {
             DiagnosticLogger.error(TAG, "rootInActiveWindow 为 null")
@@ -453,26 +454,30 @@ class AutoAppOrganizerService : AccessibilityService() {
         }
 
         val rootPkg = root.packageName?.toString() ?: "未知"
-        DiagnosticLogger.info(TAG, "当前窗口包名: $rootPkg")
-        DiagnosticLogger.info(TAG, "当前窗口类名: ${root.className}")
-        DiagnosticLogger.info(TAG, "根节点子节点数: ${root.childCount}")
+        if (verbose) {
+            DiagnosticLogger.info(TAG, "当前窗口包名: $rootPkg")
+            DiagnosticLogger.info(TAG, "当前窗口类名: ${root.className}")
+            DiagnosticLogger.info(TAG, "根节点子节点数: ${root.childCount}")
+        }
 
-        val classCounts = mutableMapOf<String, Int>()
+        val classCounts = if (verbose) mutableMapOf<String, Int>() else null
         val items = mutableListOf<DesktopItem>()
         var totalNodes = 0
         var skippedNoName = 0
-        val potentialNodes = mutableListOf<String>()
+        val potentialNodes = if (verbose) mutableListOf<String>() else null
 
         traverseNodes(root) { node ->
             totalNodes++
             val cls = node.className?.toString() ?: ""
-            classCounts[cls] = (classCounts[cls] ?: 0) + 1
+            classCounts?.let { it[cls] = (it[cls] ?: 0) + 1 }
 
             val item = parseNodeToItem(node)
             if (item != null && item.type == DesktopItem.ItemType.APP) {
                 items.add(item)
-                DiagnosticLogger.scan(TAG, "✓ APP: ${item.name} | clickable=${node.isClickable} | class=${cls.substringAfterLast('.')}")
-            } else if (isPotentialIcon(node)) {
+                if (verbose) {
+                    DiagnosticLogger.scan(TAG, "✓ APP: ${item.name} | clickable=${node.isClickable} | class=${cls.substringAfterLast('.')}")
+                }
+            } else if (potentialNodes != null && isPotentialIcon(node)) {
                 skippedNoName++
                 val name = node.contentDescription?.toString() ?: node.text?.toString() ?: "(无)"
                 potentialNodes.add("  name='$name' class=${cls.substringAfterLast('.')} clickable=${node.isClickable} childCount=${node.childCount}")
@@ -480,23 +485,24 @@ class AutoAppOrganizerService : AccessibilityService() {
             true
         }
 
-        // 输出统计
-        DiagnosticLogger.info(TAG, "总节点: $totalNodes | 识别APP: ${items.size} | 跳过: $skippedNoName")
-        DiagnosticLogger.info(TAG, "节点类名分布 (Top 15):")
-        classCounts.entries
-            .sortedByDescending { it.value }
-            .take(15)
-            .forEach { (cls, count) ->
-                DiagnosticLogger.debug(TAG, "  ${cls.substringAfterLast('.')} × $count")
-            }
+        if (verbose) {
+            DiagnosticLogger.info(TAG, "总节点: $totalNodes | 识别APP: ${items.size} | 跳过: $skippedNoName")
+            DiagnosticLogger.info(TAG, "节点类名分布 (Top 15):")
+            classCounts!!.entries
+                .sortedByDescending { it.value }
+                .take(15)
+                .forEach { (cls, count) ->
+                    DiagnosticLogger.debug(TAG, "  ${cls.substringAfterLast('.')} × $count")
+                }
 
-        if (items.isEmpty()) {
-            DiagnosticLogger.warn(TAG, "未找到任何APP图标！可能原因:")
-            DiagnosticLogger.warn(TAG, "  1. 当前窗口不是桌面 (包名: $rootPkg)")
-            DiagnosticLogger.warn(TAG, "  2. Launcher 使用非标准视图结构")
-            DiagnosticLogger.warn(TAG, "  3. 权限不足 — 请检查无障碍、悬浮窗权限")
-            DiagnosticLogger.info(TAG, "被跳过的可疑节点 (${potentialNodes.size}):")
-            potentialNodes.take(20).forEach { DiagnosticLogger.debug(TAG, it) }
+            if (items.isEmpty()) {
+                DiagnosticLogger.warn(TAG, "未找到任何APP图标！可能原因:")
+                DiagnosticLogger.warn(TAG, "  1. 当前窗口不是桌面 (包名: $rootPkg)")
+                DiagnosticLogger.warn(TAG, "  2. Launcher 使用非标准视图结构")
+                DiagnosticLogger.warn(TAG, "  3. 权限不足 — 请检查无障碍、悬浮窗权限")
+                DiagnosticLogger.info(TAG, "被跳过的可疑节点 (${potentialNodes.size}):")
+                potentialNodes.take(20).forEach { DiagnosticLogger.debug(TAG, it) }
+            }
         }
 
         root.recycle()
@@ -624,63 +630,19 @@ class AutoAppOrganizerService : AccessibilityService() {
     // ──────────────────────────────────────────────
     // ④ dumpNodeTree() 深度调试
     // ──────────────────────────────────────────────
+    //
+    // 实现已移到 util/NodeDumper.kt（#6）。这里保留薄转发方法以维持二进制兼容：
+    // dumpNodeTree 是 public，外部诊断调用方（如 MainActivity 的诊断按钮）仍在用。
+    // 直接删除会破坏 API；改为转发让调用方无感知。
 
     /**
-     * 打印当前窗口完整无障碍节点树（前 3 层 + 所有叶子节点）
-     * 这是排查「无法分析桌面图标」的最强工具
+     * 打印当前窗口完整无障碍节点树（前 3 层 + 所有叶子节点）。
+     *
+     * 实现已委托给 [com.autoapporganizer.util.NodeDumper.dump]，签名保持不变以兼容
+     * 现有调用方。
      */
     fun dumpNodeTree(node: AccessibilityNodeInfo?, maxDepth: Int = 4) {
-        if (node == null) {
-            DiagnosticLogger.error(TAG, "dumpNodeTree: node is null")
-            return
-        }
-
-        DiagnosticLogger.info(TAG, "========== 节点树转储 (maxDepth=$maxDepth) ==========")
-        val total = dumpNodeRecursive(node, 0, maxDepth, mutableSetOf())
-        DiagnosticLogger.info(TAG, "========== 总计 $total 个节点 ==========")
-    }
-
-    private fun dumpNodeRecursive(
-        node: AccessibilityNodeInfo,
-        depth: Int,
-        maxDepth: Int,
-        visited: MutableSet<String>
-    ): Int {
-        // 用「类名 + 屏幕坐标」作为节点指纹，避免 hashCode 碰撞导致节点被误判为已访问而跳过。
-        val bounds = Rect().also { node.getBoundsInScreen(it) }
-        val id = "${node.className}@${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"
-        if (id in visited) return 0
-        visited.add(id)
-
-        val indent = "  ".repeat(depth)
-        val cls = node.className?.toString()?.substringAfterLast('.') ?: "?"
-        val pkg = node.packageName?.toString() ?: ""
-        val text = (node.text?.toString() ?: "").take(30)
-        val desc = (node.contentDescription?.toString() ?: "").take(30)
-        val bStr = "[${bounds.left},${bounds.top}-${bounds.right},${bounds.bottom}]"
-
-        val flags = mutableListOf<String>()
-        if (node.isClickable) flags.add("CLICK")
-        if (node.isFocusable) flags.add("FOCUS")
-        if (node.isEnabled) flags.add("EN")
-        if (node.isScrollable) flags.add("SCROLL")
-        if (node.childCount > 0) flags.add("children=${node.childCount}")
-
-        // 只在关键深度或叶子节点时打印
-        if (depth <= maxDepth || node.childCount == 0) {
-            val flagStr = if (flags.isNotEmpty()) " [${flags.joinToString(",")}]" else ""
-            DiagnosticLogger.debug(TAG, "$indent$cls pkg=$pkg text='$text' desc='$desc' $bStr$flagStr")
-        }
-
-        var count = 1
-        if (depth < maxDepth) {
-            for (i in 0 until node.childCount) {
-                val child = node.getChild(i) ?: continue
-                count += dumpNodeRecursive(child, depth + 1, maxDepth, visited)
-                child.recycle()
-            }
-        }
-        return count
+        NodeDumper.dump(node, maxDepth, tag = TAG)
     }
 
     // ──────────────────────────────────────────────
@@ -712,12 +674,27 @@ class AutoAppOrganizerService : AccessibilityService() {
             true
         }
         root.recycle()
+        // TODO(P2): 多屏桌面支持 —— 当前仅备份默认屏 (screen=0)。
+        //   多数 Launcher 的多页桌面通过 workspace 子节点而非多 AccessibilityWindow 体现，
+        //   若要按页保留独立备份，需在 traverseNodes 中识别 Workspace/CellLayout 分页边界，
+        //   并对每页分别生成 DesktopBackup。当前实现在多页桌面上会混合所有页的图标，
+        //   撤销还原时无法准确放回原页。
         return DesktopBackup(timestamp = System.currentTimeMillis(), screen = 0, items = items)
     }
 
     // ──────────────────────────────────────────────
-    // ⑤ 智能分类（包名映射 + UsageStatsManager）
+    // ⑤ 智能分类（CategoryMatcher + UsageStatsManager）
     // ──────────────────────────────────────────────
+    //
+    // 历史上有两套分类逻辑：
+    //   1) CategoryMatcher (util/CategoryMatcher.kt) —— 从 assets/categories.json
+    //      加载关键词表，按 Map 顺序 contains 匹配，应用名 + 包名统一处理。
+    //   2) categorizeByPackageName() —— 250+ 行 inline if-else，专门处理包名。
+    // 两者语义重叠且互相不同步（同应用在不同入口可能分到不同类）。
+    // 现已删除 categorizeByPackageName，并把它的包名关键词合并进 categories.json。
+    // 分类顺序在 JSON 中精心编排：更具体的分类（如「音乐」含 qqmusic）必须排在
+    // 更宽泛的（如「社交」含 qq）之前，否则 qqmusic 会被误分到「社交」。
+    // CategoryMatcher 用 Gson 解析为 LinkedHashMap，迭代顺序 == JSON 声明顺序。
 
     private fun categorizeItems(items: List<DesktopItem>): Map<String, List<DesktopItem>> {
         val result = mutableMapOf<String, MutableList<DesktopItem>>()
@@ -727,12 +704,11 @@ class AutoAppOrganizerService : AccessibilityService() {
         DiagnosticLogger.info(TAG, "使用统计可用包数: ${usageStats.size}")
 
         for (item in items) {
-            // 优先通过包名分类（更精准）
-            val baseCategory = if (item.packageName != null) {
-                categorizeByPackageName(item.packageName)
-            } else {
-                categoryMatcher.matchCategory(item.name)
-            }
+            // 应用名和包名走同一张关键词表：CategoryMatcher 做 lowercase + contains，
+            // 包名（如 com.tencent.mm）和应用名（如「微信」）都能命中。
+            // 包名通常更精准，优先用包名；无包名时退回应用名。
+            val key = item.packageName ?: item.name
+            val baseCategory = categoryMatcher.matchCategory(key)
 
             // 结合使用频率：几乎不用的应用单独归入「不常用」
             val category = if (item.packageName != null && isRarelyUsed(item.packageName, usageStats)) {
@@ -762,123 +738,6 @@ class AutoAppOrganizerService : AccessibilityService() {
         // 阈值为 0 表示禁用「不常用」分类
         if (thresholdMs <= 0) return false
         return foregroundMs < thresholdMs
-    }
-
-    /**
-     * 基于包名精准分类（替代关键词匹配）
-     */
-    private fun categorizeByPackageName(packageName: String): String {
-        val pkg = packageName.lowercase()
-
-        // 社交
-        if (pkg.contains("wechat") || pkg.contains("tencent.mm") ||
-            pkg.contains("tencent.mobileqq") || pkg.contains("qq") && !pkg.contains("qqmusic") ||
-            pkg.contains("sina.weibo") || pkg.contains("twitter") ||
-            pkg.contains("facebook") || pkg.contains("instagram") ||
-            pkg.contains("telegram") || pkg.contains("whatsapp") ||
-            pkg.contains("messenger") || pkg.contains("snapchat") ||
-            pkg.contains("dingtalk") || pkg.contains("alibaba.android") && pkg.contains("ding") ||
-            pkg.contains("tiktok") || pkg.contains("douyin") ||
-            pkg.contains("kuaishou") || pkg.contains("reddit")) {
-            return "社交"
-        }
-
-        // 工具
-        if (pkg.contains("calculator") || pkg.contains("calendar") ||
-            pkg.contains("clock") || pkg.contains("alarm") ||
-            pkg.contains("weather") || pkg.contains("compass") ||
-            pkg.contains("file") && pkg.contains("manager") ||
-            pkg.contains("clean") || pkg.contains("master") ||
-            pkg.contains("security") || pkg.contains("antivirus") ||
-            pkg.contains("vpn") || pkg.contains("wifi") ||
-            pkg.contains("flashlight") || pkg.contains("torch") ||
-            pkg.contains("scanner") || pkg.contains("translate") ||
-            pkg.contains("note") || pkg.contains("notepad") ||
-            pkg.contains("recorder") || pkg.contains("voice") ||
-            pkg.contains("browser") || pkg.contains("chrome") ||
-            pkg.contains("firefox") || pkg.contains("edge") ||
-            pkg.contains("samsung") && pkg.contains("internet") ||
-            pkg.contains("miui") && (pkg.contains("calculator") || pkg.contains("clock") || pkg.contains("compass")) ||
-            pkg.contains("settings") || pkg.contains("setup")) {
-            return "工具"
-        }
-
-        // 购物
-        if (pkg.contains("taobao") || pkg.contains("tmall") ||
-            pkg.contains("jingdong") || pkg.contains("pinduoduo") ||
-            pkg.contains("alibaba") && pkg.contains("shop") ||
-            pkg.contains("amazon") && pkg.contains("shop") ||
-            pkg.contains("ebay") || pkg.contains("shopee") ||
-            pkg.contains("meituan") || pkg.contains("eleme") ||
-            pkg.contains("dianping") || pkg.contains("xianyu") ||
-            pkg.contains("sun") && pkg.contains("buy") ||
-            pkg.contains("mogujie") || pkg.contains("vipshop")) {
-            return "购物"
-        }
-
-        // 娱乐（视频/音乐）
-        if (pkg.contains("youtube") || pkg.contains("bilibili") ||
-            pkg.contains("iqiyi") || pkg.contains("youku") ||
-            pkg.contains("tencent.qqlive") || pkg.contains("tv") && pkg.contains("danmaku") ||
-            pkg.contains("spotify") || pkg.contains("music") ||
-            pkg.contains("netease.cloudmusic") || pkg.contains("qqmusic") ||
-            pkg.contains("kugou") || pkg.contains("kuwo") ||
-            pkg.contains("podcast") || pkg.contains("fm") ||
-            pkg.contains("twitch") || pkg.contains("huya") ||
-            pkg.contains("douyu") || pkg.contains("netflix") ||
-            pkg.contains("disney")) {
-            return "影音"
-        }
-
-        // 游戏
-        if (pkg.contains("game") || pkg.contains("tencent.tmgp") ||
-            pkg.contains("mihoyo") || pkg.contains("genshin") ||
-            pkg.contains("honkai") || pkg.contains("pubg") ||
-            pkg.contains("com.tencent.ig") || pkg.contains("king") && pkg.contains("glory") ||
-            pkg.contains("supercell") || pkg.contains("netease") && pkg.contains("game") ||
-            pkg.contains("lilith") || pkg.contains("blizzard")) {
-            return "游戏"
-        }
-
-        // 摄影
-        if (pkg.contains("camera") || pkg.contains("photo") ||
-            pkg.contains("gallery") || pkg.contains("album") ||
-            pkg.contains("picture") || pkg.contains("snapseed") ||
-            pkg.contains("lightroom") || pkg.contains("picsart") ||
-            pkg.contains("beauty") || pkg.contains("meitu") && !pkg.contains("meituan") ||
-            pkg.contains("capcut") || pkg.contains("video") && pkg.contains("editor")) {
-            return "摄影"
-        }
-
-        // 金融
-        if (pkg.contains("bank") || pkg.contains("alipay") ||
-            pkg.contains("pay") && !pkg.contains("payment") ||
-            pkg.contains("stock") || pkg.contains("finance") ||
-            pkg.contains("wallet") || pkg.contains("digital") ||
-            pkg.contains("cmb") || pkg.contains("icbc") ||
-            pkg.contains("ccb") || pkg.contains("boc")) {
-            return "金融"
-        }
-
-        // 阅读
-        if (pkg.contains("reader") || pkg.contains("book") ||
-            pkg.contains("novel") || pkg.contains("kindle") ||
-            pkg.contains("zhihu") || pkg.contains("jianshu") ||
-            pkg.contains("news") && !pkg.contains("samsung") ||
-            pkg.contains("toutiao") || pkg.contains("jinritoutiao")) {
-            return "阅读"
-        }
-
-        // 健康
-        if (pkg.contains("health") || pkg.contains("fitness") ||
-            pkg.contains("sport") || pkg.contains("step") ||
-            pkg.contains("workout") || pkg.contains("run") ||
-            pkg.contains("heartrate") || pkg.contains("sleep") ||
-            pkg.contains("pedometer")) {
-            return "健康"
-        }
-
-        return "其他"
     }
 
     /** 获取最近 7 天应用使用频率 */
@@ -952,7 +811,11 @@ class AutoAppOrganizerService : AccessibilityService() {
                 // 关键：每拖入一个图标，桌面都会自动重排，剩余图标的坐标随之变化。
                 // 旧实现只在循环前重扫一次，导致第 3 个之后的图标被拖到失效的旧坐标上，
                 // 进而拖空或拖错位置。这里改为每轮重新扫描获取最新坐标。
-                val freshItems = scanDesktop().associateBy { it.packageName ?: it.name ?: "" }
+                //
+                // verbose=false：循环内调用频繁（每图标一次），跳过 classCounts 统计 /
+                // potentialNodes 收集 / 详细日志，把扫描耗时压到最低（见 #3）。
+                // 诊断信息只在循环外的首次 scanDesktop() 调用里产生，足够排查问题。
+                val freshItems = scanDesktop(verbose = false).associateBy { it.packageName ?: it.name ?: "" }
                 // 优先用最新坐标；找不到（图标已被前一轮误拖入文件夹等）则跳过，避免拖空。
                 val freshBounds = freshItems[key]?.bounds ?: continue
                 DiagnosticLogger.debug(TAG, "拖入「$category」: ${target.name} → $freshBounds")
@@ -1070,88 +933,16 @@ class AutoAppOrganizerService : AccessibilityService() {
         val toX = toBounds.centerX().toFloat()
         val toY = toBounds.centerY().toFloat()
 
-        // ⚠️ continueStroke / willContinue 构造器均为 API 26+，而 minSdk = 24。
-        // 在 Android 7.x（API 24-25）上调用会立即 NoSuchMethodError 崩溃。
-        // 因此按版本分支：
-        //   API 26+：用 continueStroke 链式续接实现「长按 + 拖动」单指手势
-        //   API 24-25：回退为单段慢速拖动（从起点缓慢移到终点，总时长=长按+拖动），
-        //              多数 Launcher 会把起始阶段的缓慢停留识别为长按。
-        val gesture = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // ① 长按阶段（原地保持），willContinue=true 表示指针保持按下不抬起
-            val holdPath = Path().apply {
-                moveTo(fromX, fromY)
-                lineTo(fromX, fromY)
-            }
-            val holdStroke = GestureDescription.StrokeDescription(holdPath, 0, LONG_PRESS_MS, true)
-
-            // ② 拖动阶段（续接 holdStroke；起点须与上一段终点一致），willContinue=false 为末段
-            val dragPath = Path().apply {
-                moveTo(fromX, fromY)
-                lineTo(toX, toY)
-            }
-            val dragStroke = holdStroke.continueStroke(dragPath, LONG_PRESS_MS, DRAG_MS, false)
-
-            // ③ 两段都 addStroke 到同一个 GestureDescription，只 dispatchGesture 一次
-            GestureDescription.Builder()
-                .addStroke(holdStroke)
-                .addStroke(dragStroke)
-                .build()
-        } else {
-            // API 24-25：无 continueStroke，无法分段「长按+拖动」。
-            // 旧回退方案直接 lineTo(toX,toY) —— 手指一开始就移动，长按阈值不会触发，
-            // 导致拖拽前没有进入「编辑模式」，拖拽完全无效。
-            //
-            // 正确做法：在起点画微小密圈停留（半径远小于 touch slop ~8dp，被识别为原地按住），
-            // 让停留段弧长占比 ≈ 长按时长占比，触发 Launcher 长按后再沿路径滑到目标。
-            // 系统按路径总弧长线性分配时间，因此停留段弧长需按拖动距离动态计算。
-            val slop = 4f // 远小于典型 touch slop，确保被判定为原地按住
-            val dragDist = hypot(toX - fromX, toY - fromY).coerceAtLeast(1f)
-            val holdRatio = LONG_PRESS_MS.toFloat() / (LONG_PRESS_MS + DRAG_MS)
-            val holdLength = (holdRatio / (1f - holdRatio)) * dragDist
-            val circumference = (2f * Math.PI.toFloat() * slop)
-            val loops = (holdLength / circumference).toInt().coerceIn(2, 40)
-            val ptsPerLoop = 10
-            val path = Path().apply {
-                moveTo(fromX, fromY)
-                val total = loops * ptsPerLoop
-                var i = 0
-                while (i < total) {
-                    val angle = 2f * Math.PI.toFloat() * i / ptsPerLoop
-                    lineTo(fromX + slop * cos(angle), fromY + slop * sin(angle))
-                    i++
-                }
-                lineTo(fromX, fromY) // 回到起点再出发
-                lineTo(toX, toY)
-            }
-            GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0, LONG_PRESS_MS + DRAG_MS))
-                .build()
-        }
-
-        val ok = dispatchGestureSync(gesture)
+        // Delegated to the shared [GestureExecutor], which contains a single, version-aware
+        // implementation of the long-press + drag gesture (including the API 24-25 tiny-circle
+        // fallback). Previously this method duplicated that logic inline; see #7.
+        val ok = gestureExecutor.performDrag(
+            fromX, fromY, toX, toY,
+            holdMs = LONG_PRESS_MS,
+            dragMs = DRAG_MS
+        )
         if (!ok) {
             DiagnosticLogger.warn(TAG, "拖拽手势被取消: ($fromX,$fromY)→($toX,$toY)")
-        }
-    }
-
-    /** 同步派发一次手势，返回是否成功完成（true=完成，false=取消/超时）。
-     *  用 withTimeout 保护：若系统不回调（服务断开、手势异常等），
-     *  超时后返回 false，避免协程永久挂起卡住整个流程。 */
-    private suspend fun dispatchGestureSync(gesture: GestureDescription): Boolean {
-        val result = CompletableDeferred<Boolean>()
-        dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                result.complete(true)
-            }
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                result.complete(false)
-            }
-        }, null)
-        return try {
-            withTimeout(GESTURE_TIMEOUT_MS) { result.await() }
-        } catch (e: TimeoutCancellationException) {
-            DiagnosticLogger.warn(TAG, "手势派发超时（${GESTURE_TIMEOUT_MS}ms 无回调）")
-            false
         }
     }
 }
