@@ -13,6 +13,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * Translates high-level [Action]s into platform accessibility gestures and global actions,
@@ -146,6 +149,29 @@ class GestureExecutor(private val service: AccessibilityService) {
         toX: Float, toY: Float,
         durationMs: Long
     ): Boolean {
+        // Default split: hold the origin for half the duration, then move for the other half.
+        // Callers that need explicit control (e.g. mimicking a 600ms long-press followed by
+        // a 500ms drag, as required by most launchers' edit-mode threshold) should use the
+        // [performDrag] overload below that takes separate holdMs/dragMs.
+        val half = (durationMs / 2).coerceAtLeast(1L)
+        return performDrag(fromX, fromY, toX, toY, holdMs = half, dragMs = half)
+    }
+
+    /**
+     * Drag with an explicit long-press phase ([holdMs]) followed by a move phase ([dragMs]).
+     *
+     * This overload exists because most home screen launchers require a long-press (>~400ms)
+     * to enter edit mode before they will accept a drag. On API 26+ the two phases are
+     * implemented as a continued stroke; on API 24-25 (no continueStroke) we fall back to a
+     * single stroke that traces tiny circles at the origin (well below touch slop) to simulate
+     * the hold, then moves to the destination — see [buildDragGesture] for details.
+     */
+    suspend fun performDrag(
+        fromX: Float, fromY: Float,
+        toX: Float, toY: Float,
+        holdMs: Long,
+        dragMs: Long
+    ): Boolean {
         if (!isValidCoordinate(fromX, fromY) || !isValidCoordinate(toX, toY)) {
             DiagnosticLogger.warn(
                 TAG,
@@ -153,7 +179,7 @@ class GestureExecutor(private val service: AccessibilityService) {
             )
             return false
         }
-        val gesture = buildDragGesture(fromX, fromY, toX, toY, durationMs)
+        val gesture = buildDragGesture(fromX, fromY, toX, toY, holdMs, dragMs)
         return dispatchGesture(gesture)
     }
 
@@ -170,39 +196,80 @@ class GestureExecutor(private val service: AccessibilityService) {
     }
 
     /**
-     * Builds a drag gesture. On API 26+ a continued stroke is used so the press is held at
-     * the origin before moving smoothly to the destination (mimicking a real drag). On older
-     * API levels a single slow stroke from origin to destination is used instead.
+     * Builds a drag gesture composed of a long-press phase ([holdMs]) followed by a move
+     * phase ([dragMs]).
+     *
+     * - API 26+: two continued strokes (hold at origin → move to target). This is the only
+     *   way to express a true press-and-hold followed by a drag with a single pointer.
+     * - API 24-25: `continueStroke` / `willContinue` don't exist, so we cannot split the
+     *   gesture into two strokes. Naively drawing a single line from origin to target fails
+     *   because the pointer starts moving immediately and never triggers the launcher's
+     *   long-press threshold (typically ~400ms) — the drag is silently ignored. Instead we
+     *   trace tiny circles (radius `slop`, well below the ~8dp touch slop) at the origin so
+     *   the system sees the pointer as effectively stationary during the [holdMs] portion,
+     *   then we draw a line to the target. The system allocates stroke time proportionally
+     *   to arc length, so we size the circle portion so that its arc length matches the
+     *   hold:drag time ratio. This was previously implemented inline in
+     *   `AutoAppOrganizerService.dragAndDrop` and has been consolidated here so both the
+     *   legacy organize path and the Agent framework share a single, tested implementation.
      */
     private fun buildDragGesture(
         fromX: Float, fromY: Float,
         toX: Float, toY: Float,
-        durationMs: Long
+        holdMs: Long,
+        dragMs: Long
     ): GestureDescription {
+        val totalMs = (holdMs + dragMs).coerceAtLeast(1L)
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // API 26+: press-and-hold at the origin, then continue into a move to the target.
-            val half = (durationMs / 2).coerceAtLeast(1L)
-
+            // ① Hold phase: pointer stays at the origin. willContinue=true keeps it pressed.
             val downPath = Path().apply { moveTo(fromX, fromY) }
-            val downStroke = GestureDescription.StrokeDescription(downPath, 0, half, /* willContinue = */ true)
+            val downStroke = GestureDescription.StrokeDescription(
+                downPath, 0, holdMs.coerceAtLeast(1L), /* willContinue = */ true
+            )
 
+            // ② Move phase: continues from downStroke, moves to target, then releases.
             val movePath = Path().apply {
                 moveTo(fromX, fromY)
                 lineTo(toX, toY)
             }
-            val moveStroke = downStroke.continueStroke(movePath, 0, half, /* willContinue = */ false)
+            val moveStroke = downStroke.continueStroke(
+                movePath, 0, dragMs.coerceAtLeast(1L), /* willContinue = */ false
+            )
 
             GestureDescription.Builder()
                 .addStroke(downStroke)
                 .addStroke(moveStroke)
                 .build()
         } else {
-            // API 24-25: a single slow stroke from origin to destination.
+            // API 24-25: simulated long-press via tiny circles at the origin.
+            // See method kdoc for why this is necessary and how the geometry is derived.
+            val slop = 4f
+            val dragDist = hypot(toX - fromX, toY - fromY).coerceAtLeast(1f)
+            val holdRatio = holdMs.toFloat() / totalMs.toFloat()
+            // Arc length needed for the hold phase so that time-proportional allocation
+            // gives us ~holdMs of stationary time before the lineTo(toX, toY) segment.
+            val holdLength = if (holdRatio < 1f) {
+                (holdRatio / (1f - holdRatio)) * dragDist
+            } else {
+                // Edge case: dragMs == 0 → all time is hold; cap the loops to avoid huge paths.
+                dragDist * 40f
+            }
+            val circumference = 2f * Math.PI.toFloat() * slop
+            val loops = (holdLength / circumference).toInt().coerceIn(2, 40)
+            val ptsPerLoop = 10
             val path = Path().apply {
                 moveTo(fromX, fromY)
+                val total = loops * ptsPerLoop
+                var i = 0
+                while (i < total) {
+                    val angle = 2f * Math.PI.toFloat() * i / ptsPerLoop
+                    lineTo(fromX + slop * cos(angle), fromY + slop * sin(angle))
+                    i++
+                }
+                lineTo(fromX, fromY) // return to origin before moving to target
                 lineTo(toX, toY)
             }
-            val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
+            val stroke = GestureDescription.StrokeDescription(path, 0, totalMs)
             GestureDescription.Builder().addStroke(stroke).build()
         }
     }

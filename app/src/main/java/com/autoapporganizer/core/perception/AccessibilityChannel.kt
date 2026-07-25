@@ -14,15 +14,20 @@ import kotlin.coroutines.resume
 
 /**
  * Source of ground-truth screen information coming directly from the platform
- * AccessibilityService: the node tree ([scan]) and screen captures ([screenshot]).
+ * AccessibilityService: the node tree ([scanElements]) and screen captures ([screenshot]).
  */
 interface AccessibilityChannel {
 
     /**
      * Walk the currently active window's accessibility tree and return the interactable
      * elements (icons/buttons) found, as [ScreenElement]s with [ScreenElement.Source.ACCESSIBILITY].
+     *
+     * Renamed from `scan()` to disambiguate from [VisionChannel.detectIcons] (which invokes
+     * a cloud VLM) and from `AutoAppOrganizerService.scanDesktop()` (which returns
+     * `DesktopItem`s, not `ScreenElement`s). All three were previously called `scan()`
+     * despite returning different types and having different costs.
      */
-    suspend fun scan(): List<ScreenElement>
+    suspend fun scanElements(): List<ScreenElement>
 
     /**
      * Capture a screenshot of the default display. Returns `null` when the platform API
@@ -49,7 +54,7 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
         private const val SCREENSHOT_TIMEOUT_MS = 3000L
     }
 
-    override suspend fun scan(): List<ScreenElement> {
+    override suspend fun scanElements(): List<ScreenElement> {
         val elements = mutableListOf<ScreenElement>()
         var root: AccessibilityNodeInfo? = null
         try {
