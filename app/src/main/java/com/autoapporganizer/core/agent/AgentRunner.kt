@@ -36,6 +36,14 @@ class AgentRunner(
 
         /** Delay between ReAct iterations to let the UI settle (ms). */
         private const val STEP_SETTLE_MS = 500L
+
+        /**
+         * Minimum number of steps between two fresh VLM calls when [AgentTask.needsVision]
+         * returns `true`. Even when the task asks for vision on consecutive steps, we reuse
+         * the most recent [VisionResult] within this window to avoid hammering the cloud
+         * model on rapid iterations where the screen has not meaningfully changed.
+         */
+        private const val VISION_REUSE_WINDOW = 3
     }
 
     /**
@@ -55,16 +63,47 @@ class AgentRunner(
             DiagnosticLogger.warn(TAG, "Vision channel check failed: ${e.message}")
         }
 
+        // Cache of the most recent VLM result, plus the step at which it was produced.
+        // Reused when the task does not require a fresh pass (needsVision == false) or
+        // when the previous pass is still within [VISION_REUSE_WINDOW] steps.
+        var cachedVision: VisionResult? = null
+        var cachedVisionStep: Int = Int.MIN_VALUE
+
         try {
             while (state.step < task.maxSteps) {
                 // ── Perceive ──────────────────────────────────────────────
                 val perception = perceptionChannel.scan()
 
-                val visionResult: VisionResult? = try {
-                    visionChannel.analyze("Describe the current screen state briefly.")
-                } catch (e: Exception) {
-                    DiagnosticLogger.warn(TAG, "Vision analyze failed (non-fatal): ${e.message}")
-                    null
+                // Decide whether this step actually needs a fresh VLM pass.
+                // - Task says it doesn't need vision  → reuse cache (no cloud call)
+                // - Task says it needs vision, but the last pass is recent → reuse cache
+                // - Otherwise → make a fresh cloud call
+                val needsFreshVision = visionAvailable &&
+                    task.needsVision(state) &&
+                    (state.step - cachedVisionStep) >= VISION_REUSE_WINDOW
+
+                val visionResult: VisionResult? = if (needsFreshVision) {
+                    try {
+                        visionChannel.analyze("Describe the current screen state briefly.")
+                    } catch (e: Exception) {
+                        DiagnosticLogger.warn(TAG, "Vision analyze failed (non-fatal): ${e.message}")
+                        null
+                    }
+                } else {
+                    // Reuse the cached result (may be null if no pass has run yet).
+                    if (cachedVision != null) {
+                        DiagnosticLogger.debug(
+                            TAG,
+                            "Vision reuse: skipping VLM call at step ${state.step} " +
+                                "(last pass at $cachedVisionStep, needsVision=${task.needsVision(state)})"
+                        )
+                    }
+                    cachedVision
+                }
+
+                if (needsFreshVision && visionResult != null) {
+                    cachedVision = visionResult
+                    cachedVisionStep = state.step
                 }
 
                 // ── Reason ────────────────────────────────────────────────
