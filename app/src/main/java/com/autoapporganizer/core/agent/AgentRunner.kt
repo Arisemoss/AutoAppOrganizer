@@ -72,7 +72,7 @@ class AgentRunner(
         try {
             while (state.step < task.maxSteps) {
                 // ── Perceive ──────────────────────────────────────────────
-                val perception = perceptionChannel.scan()
+                val perception = perceptionChannel.scanElements()
 
                 // Decide whether this step actually needs a fresh VLM pass.
                 // - Task says it doesn't need vision  → reuse cache (no cloud call)
