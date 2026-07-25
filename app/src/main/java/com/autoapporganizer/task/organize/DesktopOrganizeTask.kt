@@ -244,6 +244,20 @@ class DesktopOrganizeTask(
         return phase == "done" || categoryQueue.isEmpty() || state.errors.size >= 5
     }
 
+    /**
+     * Vision is only useful when we need to *locate* something visually:
+     *  - "scan"  : the initial icon scan already happened in [describe]; a per-step vision
+     *              pass helps when accessibility missed icons and we want to supplement.
+     *  - "press" : a folder was just created and may have been re-gridded; a vision pass
+     *              can pin down its real bounds when accessibility fails.
+     * "drag" and "next" operate on coordinates already in [categorized] / [currentFolderBounds]
+     * and do not benefit from another cloud call, so we skip them.
+     */
+    override fun needsVision(state: TaskState): Boolean {
+        val phase = state.context[PHASE] as? String ?: "scan"
+        return phase == "scan" || phase == "press"
+    }
+
     override fun getFoldersCreated(): Int = foldersCreated
 
     // ──────────────────────────────────────────────

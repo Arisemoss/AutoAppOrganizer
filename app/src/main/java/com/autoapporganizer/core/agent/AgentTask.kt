@@ -58,6 +58,17 @@ interface AgentTask {
     /** Check if the task is complete. */
     fun isComplete(state: TaskState): Boolean
 
+    /**
+     * Whether the next reason() iteration needs a fresh VLM pass for [state].
+     *
+     * Default is `false`: most steps only need the accessibility tree, and the
+     * caller ([AgentRunner]) may reuse the most recent [VisionResult] when this
+     * returns `false`. Tasks that genuinely need a vision pass (e.g. an initial
+     * icon scan or locating a newly-created folder) should override and return
+     * `true` for the relevant phase.
+     */
+    fun needsVision(state: TaskState): Boolean = false
+
     /** Get number of folders created (for reporting). */
     fun getFoldersCreated(): Int
 }
