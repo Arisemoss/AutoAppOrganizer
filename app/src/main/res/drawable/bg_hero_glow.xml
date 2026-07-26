@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Subtle terracotta glow behind the hero card for depth. -->
+<!-- Subtle cobalt glow behind the hero card for depth. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
     <gradient
         android:type="radial"
         android:gradientRadius="600"
-        android:startColor="#33C2410C"
-        android:centerColor="#1AC2410C"
-        android:endColor="#00C2410C" />
+        android:startColor="#332563EB"
+        android:centerColor="#1A2563EB"
+        android:endColor="#002563EB" />
 </shape>

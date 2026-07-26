@@ -23,7 +23,7 @@ data class ScreenElement(
     val packageName: String? = null
 ) {
     /** Origin of a [ScreenElement]. */
-    enum class Source { ACCESSIBILITY, VISION }
+    enum class Source { ACCESSIBILITY, VISION, FUSED }
 
     /** Horizontal center of the bounds. */
     val centerX: Float

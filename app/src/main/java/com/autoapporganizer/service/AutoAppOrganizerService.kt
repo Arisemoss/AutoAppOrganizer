@@ -18,9 +18,15 @@ import com.autoapporganizer.util.HistoryManager
 import com.autoapporganizer.core.action.GestureExecutor
 import com.autoapporganizer.core.agent.AgentRunner
 import com.autoapporganizer.core.model.CloudVlmService
+import com.autoapporganizer.core.model.VlmServiceFactory
 import com.autoapporganizer.core.perception.AccessibilityChannelImpl
 import com.autoapporganizer.core.perception.VisionChannelImpl
 import com.autoapporganizer.task.organize.DesktopOrganizeTask
+import com.autoapporganizer.core.OrganizerFacade
+import com.autoapporganizer.core.strategy.LegacyOrganizer
+import com.autoapporganizer.core.strategy.OrganizeSessionContext
+import com.autoapporganizer.core.strategy.StrategyResult
+import com.autoapporganizer.core.strategy.VisionOrganizer
 import com.autoapporganizer.util.NodeDumper
 import com.autoapporganizer.util.PrefsManager
 import kotlinx.coroutines.*
@@ -35,7 +41,7 @@ import kotlinx.coroutines.*
  * 4. UsageStatsManager 辅助分类（常用/非常用）
  * 5. 小米 MIUI 专属适配
  */
-class AutoAppOrganizerService : AccessibilityService() {
+class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionOrganizer {
 
     interface OrganizeCallback {
         fun onProgress(progress: Int, message: String)
@@ -106,6 +112,7 @@ class AutoAppOrganizerService : AccessibilityService() {
     private lateinit var gestureExecutor: GestureExecutor
 
     private var currentBackup: DesktopBackup? = null
+    private lateinit var facade: OrganizerFacade
 
     override fun onCreate() {
         super.onCreate()
@@ -116,6 +123,7 @@ class AutoAppOrganizerService : AccessibilityService() {
         prefs = PrefsManager(this)
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         gestureExecutor = GestureExecutor(this)
+        facade = OrganizerFacade(prefs, this, this)
     }
 
     override fun onServiceConnected() {
@@ -168,67 +176,22 @@ class AutoAppOrganizerService : AccessibilityService() {
         organizeCallback?.onProgress(organizeProgress, message)
     }
 
-    /** 开始整理桌面 */
+    /** 开始整理桌面（兼容入口，实际通过 [OrganizerFacade] 分发到当前策略） */
     fun startOrganize() {
         if (isOrganizing) return
 
         serviceScope.launch {
             isOrganizing = true
             organizeProgress = 0
-
             try {
-                // ① 强制返回桌面（受设置控制）
-                if (prefs.autoReturnHome) {
-                    reportProgress(5, "正在返回桌面…")
-                    val onDesktop = goToHomeScreen()
-                    if (!onDesktop) {
-                        organizeCallback?.onComplete(false, 0, "无法切换到桌面，请手动返回桌面后重试")
-                        return@launch
-                    }
-                }
-                DiagnosticLogger.info(TAG, "已确认在桌面: $detectedLauncherPkg")
-
-                // ② 备份当前桌面
-                reportProgress(10, "正在备份桌面…")
-                currentBackup = backupDesktop()
-                if (currentBackup != null) {
-                    backupManager.saveBackup(currentBackup!!)
-                }
-
-                // ③ 扫描并解析桌面图标
-                reportProgress(30, "正在分析桌面图标…")
-                val desktopItems = scanDesktop()
-                if (desktopItems.isEmpty()) {
-                    // 自动触发深度诊断
-                    DiagnosticLogger.info(TAG, "=== 自动深度诊断 ===")
-                    val diagRoot = rootInActiveWindow
-                    dumpNodeTree(diagRoot)
-                    diagRoot?.recycle()
-                    organizeCallback?.onComplete(false, 0, "未找到桌面图标 — 请查看诊断日志")
-                    return@launch
-                }
-
-                // ④ 智能分类
-                reportProgress(50, "正在智能分类…")
-                val categorized = categorizeItems(desktopItems)
-
-                // ⑤ 执行整理
-                reportProgress(70, "正在整理桌面…")
-                val folderCount = performOrganize(categorized)
-
-                // ⑥ 记录历史会话
-                val session = OrganizeSession(
-                    timestamp = System.currentTimeMillis(),
-                    folderCount = folderCount,
-                    appCount = desktopItems.size,
-                    categories = categorized.mapValues { it.value.size },
-                    launcher = detectedLauncherPkg
+                val result = facade.organize(
+                    OrganizeSessionContext(
+                        prefs = prefs,
+                        onProgress = { p, m -> reportProgress(p, m) }
+                    )
                 )
-                historyManager.append(session)
-
-                reportProgress(100, "整理完成")
-                organizeCallback?.onComplete(true, folderCount, "整理完成，共创建 $folderCount 个文件夹")
-
+                reportProgress(100, result.message)
+                organizeCallback?.onComplete(result.success, result.foldersCreated, result.message)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -239,6 +202,67 @@ class AutoAppOrganizerService : AccessibilityService() {
                 isOrganizing = false
             }
         }
+    }
+
+    /**
+     * 传统无障碍桌面整理实现 —— [LegacyOrganizer] 接口。
+     */
+    override suspend fun organizeDesktop(): StrategyResult {
+        organizeProgress = 0
+
+        // ① 强制返回桌面（受设置控制）
+        if (prefs.autoReturnHome) {
+            reportProgress(5, "正在返回桌面…")
+            val onDesktop = goToHomeScreen()
+            if (!onDesktop) {
+                return StrategyResult(false, "无法切换到桌面，请手动返回桌面后重试", 0, 0)
+            }
+        }
+        DiagnosticLogger.info(TAG, "已确认在桌面: $detectedLauncherPkg")
+
+        // ② 备份当前桌面
+        reportProgress(10, "正在备份桌面…")
+        currentBackup = backupDesktop()
+        if (currentBackup != null) {
+            backupManager.saveBackup(currentBackup!!)
+        }
+
+        // ③ 扫描并解析桌面图标
+        reportProgress(30, "正在分析桌面图标…")
+        val desktopItems = scanDesktop()
+        if (desktopItems.isEmpty()) {
+            // 自动触发深度诊断
+            DiagnosticLogger.info(TAG, "=== 自动深度诊断 ===")
+            val diagRoot = rootInActiveWindow
+            dumpNodeTree(diagRoot)
+            diagRoot?.recycle()
+            return StrategyResult(false, "未找到桌面图标 — 请查看诊断日志", 0, 0)
+        }
+
+        // ④ 智能分类
+        reportProgress(50, "正在智能分类…")
+        val categorized = categorizeItems(desktopItems)
+
+        // ⑤ 执行整理
+        reportProgress(70, "正在整理桌面…")
+        val folderCount = performOrganize(categorized)
+
+        // ⑥ 记录历史会话
+        val session = OrganizeSession(
+            timestamp = System.currentTimeMillis(),
+            folderCount = folderCount,
+            appCount = desktopItems.size,
+            categories = categorized.mapValues { it.value.size },
+            launcher = detectedLauncherPkg
+        )
+        historyManager.append(session)
+
+        return StrategyResult(
+            success = folderCount > 0,
+            message = "整理完成，共创建 $folderCount 个文件夹",
+            foldersCreated = folderCount,
+            appsOrganized = desktopItems.size
+        )
     }
 
     /** 撤销整理 */
@@ -331,8 +355,7 @@ class AutoAppOrganizerService : AccessibilityService() {
     // ──────────────────────────────────────────────
 
     /**
-     * 视觉整理 —— 使用视觉 + 无障碍混合感知驱动 ReAct Agent 整理桌面。
-     * 当 VLM 未配置时退化为纯无障碍模式。
+     * 视觉整理入口 —— 直接调用 [VisionOrganizer.organizeByVision]。
      */
     fun startVisionOrganize() {
         if (isOrganizing) {
@@ -343,32 +366,9 @@ class AutoAppOrganizerService : AccessibilityService() {
             isOrganizing = true
             organizeProgress = 0
             try {
-                DiagnosticLogger.info(TAG, "=== 视觉整理启动 ===")
-                val vlm = CloudVlmService(prefs)
-                DiagnosticLogger.info(TAG, "VLM: provider=${prefs.vlmProvider} available=${vlm.isAvailable}")
-
-                val perceptionChannel = AccessibilityChannelImpl(this@AutoAppOrganizerService)
-                val visionChannel = VisionChannelImpl(perceptionChannel, vlm)
-                val runner = AgentRunner(gestureExecutor, perceptionChannel, visionChannel)
-                val task = DesktopOrganizeTask(perceptionChannel, visionChannel, this@AutoAppOrganizerService, prefs)
-
-                // 整理前返回桌面
-                if (prefs.autoReturnHome) {
-                    reportProgress(5, "正在返回桌面…")
-                    val onDesktop = goToHomeScreen()
-                    if (!onDesktop) {
-                        organizeCallback?.onComplete(false, 0, "无法切换到桌面，请手动返回桌面后重试")
-                        return@launch
-                    }
-                }
-
-                val result = runner.run(task) { progress, msg ->
-                    reportProgress(progress, msg)
-                }
-
-                val folders = task.getFoldersCreated()
+                val result = organizeByVision()
                 reportProgress(100, result.message)
-                organizeCallback?.onComplete(result.success, folders, result.message)
+                organizeCallback?.onComplete(result.success, result.foldersCreated, result.message)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -379,6 +379,38 @@ class AutoAppOrganizerService : AccessibilityService() {
                 isOrganizing = false
             }
         }
+    }
+
+    /**
+     * 视觉整理实现 —— [VisionOrganizer] 接口。
+     */
+    override suspend fun organizeByVision(): StrategyResult {
+        organizeProgress = 0
+        DiagnosticLogger.info(TAG, "=== 视觉整理启动 ===")
+
+        val vlm = VlmServiceFactory.create(prefs)
+        DiagnosticLogger.info(TAG, "VLM: provider=${prefs.vlmProvider} available=${vlm.isAvailable}")
+
+        val perceptionChannel = AccessibilityChannelImpl(this@AutoAppOrganizerService)
+        val visionChannel = VisionChannelImpl(perceptionChannel, vlm)
+        val runner = AgentRunner(gestureExecutor, perceptionChannel, visionChannel)
+        val task = DesktopOrganizeTask(perceptionChannel, visionChannel, this@AutoAppOrganizerService, prefs)
+
+        // 整理前返回桌面
+        if (prefs.autoReturnHome) {
+            reportProgress(5, "正在返回桌面…")
+            val onDesktop = goToHomeScreen()
+            if (!onDesktop) {
+                return StrategyResult(false, "无法切换到桌面，请手动返回桌面后重试", 0, 0)
+            }
+        }
+
+        val result = runner.run(task) { progress, msg ->
+            reportProgress(progress, msg)
+        }
+
+        val folders = task.getFoldersCreated()
+        return result.copy(foldersCreated = folders)
     }
 
     fun isServiceEnabled() = instance != null

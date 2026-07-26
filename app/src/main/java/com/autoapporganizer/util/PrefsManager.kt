@@ -83,7 +83,7 @@ class PrefsManager(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_AUTO_HOME, value).apply()
 
     // P1 视觉 Agent：VLM 配置
-    /** VLM 提供商：none / openai / gemini / glm */
+    /** VLM 提供商：none / openai / gemini / glm / local */
     var vlmProvider: String
         get() = prefs.getString(KEY_VLM_PROVIDER, DEFAULT_VLM_PROVIDER) ?: DEFAULT_VLM_PROVIDER
         set(value) = prefs.edit().putString(KEY_VLM_PROVIDER, value).apply()
@@ -107,6 +107,11 @@ class PrefsManager(context: Context) {
     var vlmModel: String
         get() = prefs.getString(KEY_VLM_MODEL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_VLM_MODEL, value).apply()
+
+    /** 整理策略：legacy / vision / hybrid */
+    var organizeStrategy: String
+        get() = prefs.getString(KEY_ORGANIZE_STRATEGY, "hybrid") ?: "hybrid"
+        set(value) = prefs.edit().putString(KEY_ORGANIZE_STRATEGY, value).apply()
 
     /**
      * 一次性迁移：把旧版本明文存的 [vlmApiKey] 复制到 [target]（加密 prefs）并从明文
@@ -160,7 +165,14 @@ class PrefsManager(context: Context) {
         const val KEY_VLM_API_KEY = "vlm_api_key"
         const val KEY_VLM_ENDPOINT = "vlm_endpoint"
         const val KEY_VLM_MODEL = "vlm_model"
+        const val KEY_ORGANIZE_STRATEGY = "organize_strategy"
         const val DEFAULT_VLM_PROVIDER = "none"
+
+        const val PROVIDER_NONE = "none"
+        const val PROVIDER_OPENAI = "openai"
+        const val PROVIDER_GEMINI = "gemini"
+        const val PROVIDER_GLM = "glm"
+        const val PROVIDER_LOCAL = "local"
 
         /** 标记旧版明文 API Key 是否已迁移到加密 prefs。 */
         private const val KEY_MIGRATED = "api_key_migrated_v1"

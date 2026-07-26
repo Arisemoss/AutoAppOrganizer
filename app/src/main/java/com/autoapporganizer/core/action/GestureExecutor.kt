@@ -2,331 +2,285 @@ package com.autoapporganizer.core.action
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Build
-import android.view.Display
-import android.view.MotionEvent
-import androidx.core.content.ContextCompat
+import android.os.Handler
+import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.WindowManager
+import android.view.accessibility.AccessibilityNodeInfo
 import com.autoapporganizer.util.DiagnosticLogger
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.sin
+import kotlin.math.max
+import kotlin.math.min
 
 /**
- * Translates high-level [Action]s into platform accessibility gestures and global actions,
- * executing them against the device through an [AccessibilityService].
+ * Accessibility-backed [GestureEngine].
  *
- * All gesture work is suspending and bounded by [GESTURE_TIMEOUT_MS]; a gesture that does
- * not complete in time is reported as a failure (`false`).
- *
- * @param service The hosting accessibility service used to dispatch gestures and global actions.
+ * This implementation relies on the accessibility API to dispatch gestures,
+ * simulate system buttons, and capture the screen. It is used by the production app;
+ * tests can inject a fake [GestureEngine] instead.
  */
-class GestureExecutor(private val service: AccessibilityService) {
+class GestureExecutor(private val service: AccessibilityService) : GestureEngine {
 
     companion object {
         private const val TAG = "GestureExecutor"
-        private const val GESTURE_TIMEOUT_MS = 5000L
+        private const val DEFAULT_CLICK_MS = 120L
+        private const val DEFAULT_HOLD_MS = 600L
+        private const val DEFAULT_DRAG_MS = 800L
+        private const val DEFAULT_SWIPE_MS = 300L
+        private const val SETTLE_MS = 120L
+        private const val INVALID = -1
+    }
 
-        /** Stroke duration used for simple taps (ms). */
-        private const val CLICK_DURATION_MS = 100L
+    private val mainHandler = Handler(Looper.getMainLooper())
 
-        /** Settling delay after Home/Back global actions (ms). */
-        private const val GLOBAL_ACTION_SETTLE_MS = 500L
+    override val screenWidth: Int
+        get() = resolveScreenBounds().width()
 
-        /** Screenshot capture timeout (ms). */
-        private const val SCREENSHOT_TIMEOUT_MS = 3000L
+    override val screenHeight: Int
+        get() = resolveScreenBounds().height()
+
+    /**
+     * Resolve screen bounds from the active window root, falling back to
+     * the display metrics when the accessibility tree is not yet populated.
+     */
+    private fun resolveScreenBounds(): Rect {
+        val root = service.rootInActiveWindow
+        if (root != null) {
+            val bounds = Rect()
+            root.getBoundsInScreen(bounds)
+            if (bounds.width() > 0 && bounds.height() > 0) {
+                root.recycle()
+                return bounds
+            }
+            root.recycle()
+        }
+
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        (service.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
+            .defaultDisplay.getMetrics(metrics)
+        return Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
     }
 
     /**
-     * Execute [action] and return `true` on success.
-     *
-     * For gesture actions the result reflects whether the gesture completed (vs. being
-     * cancelled or timing out). For [Action.Wait] the result is always `true`; for
-     * [Action.Complete] this is a no-op that also returns `true`.
+     * Clamp coordinates to the screen bounds and ensure they are not negative.
+     * Out-of-bounds gestures would silently fail or hit the wrong screen edge.
      */
-    suspend fun execute(action: Action): Boolean {
-        DiagnosticLogger.debug(TAG, "execute: ${action.describe()}")
-        return when (action) {
-            is Action.Click -> performClick(action.x, action.y)
-            is Action.LongPress -> performLongPress(action.x, action.y, action.durationMs)
-            is Action.Drag -> performDrag(
-                action.fromX, action.fromY, action.toX, action.toY, action.durationMs
-            )
-            is Action.Wait -> {
-                delay(action.ms)
-                true
-            }
-            Action.Home -> {
-                val ok = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-                delay(GLOBAL_ACTION_SETTLE_MS)
-                DiagnosticLogger.debug(TAG, "Home performed=$ok")
-                ok
-            }
-            Action.Back -> {
-                val ok = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-                delay(GLOBAL_ACTION_SETTLE_MS)
-                DiagnosticLogger.debug(TAG, "Back performed=$ok")
-                ok
-            }
-            Action.Complete -> true
-        }
+    private fun clampToScreen(x: Float, y: Float): Pair<Float, Float> {
+        val bounds = resolveScreenBounds()
+        val maxX = max(bounds.left, bounds.right - 1).toFloat()
+        val maxY = max(bounds.top, bounds.bottom - 1).toFloat()
+        val minX = bounds.left.toFloat()
+        val minY = bounds.top.toFloat()
+        return Pair(
+            min(maxX, max(minX, x)),
+            min(maxY, max(minY, y))
+        )
     }
 
-    /**
-     * Capture a screenshot via the accessibility service (API 30+). Returns `null` when the
-     * API is unavailable or the capture fails/times out.
-     */
-    suspend fun takeScreenshot(): Bitmap? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            DiagnosticLogger.warn(TAG, "takeScreenshot requires API 30+ (current=${Build.VERSION.SDK_INT})")
-            return null
-        }
-        return withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
-            suspendCancellableCoroutine<Bitmap?> { cont ->
-                try {
-                    service.takeScreenshot(
-                        Display.DEFAULT_DISPLAY,
-                        ContextCompat.getMainExecutor(service),
-                        object : AccessibilityService.TakeScreenshotCallback {
-                            override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                                val bitmap = result.bitmap
-                                DiagnosticLogger.debug(
-                                    TAG,
-                                    "Screenshot captured: ${bitmap.width}x${bitmap.height}"
-                                )
-                                if (cont.isActive) cont.resume(bitmap)
-                            }
+    private fun isWithinScreen(x: Float, y: Float): Boolean {
+        val bounds = resolveScreenBounds()
+        return x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom
+    }
 
-                            override fun onFailure(errorCode: Int) {
-                                DiagnosticLogger.error(
-                                    TAG,
-                                    "takeScreenshot onFailure errorCode=$errorCode",
-                                    null
-                                )
-                                if (cont.isActive) cont.resume(null)
-                            }
-                        }
-                    )
-                } catch (e: Exception) {
-                    DiagnosticLogger.error(TAG, "takeScreenshot threw: ${e.message}")
-                    if (cont.isActive) cont.resume(null)
-                }
+    override suspend fun execute(action: Action): Boolean = when (action) {
+        is Action.Click -> performClick(action.x, action.y)
+        is Action.LongPress -> performLongPress(action.x, action.y, action.durationMs)
+        is Action.Drag -> performDrag(
+            action.fromX, action.fromY,
+            action.toX, action.toY,
+            action.durationMs
+        )
+        is Action.Swipe -> performSwipe(
+            action.fromX, action.fromY,
+            action.toX, action.toY,
+            action.durationMs
+        )
+        is Action.Type -> performType(action.text)
+        is Action.Wait -> {
+            kotlinx.coroutines.delay(action.ms)
+            true
+        }
+        Action.Home -> performGlobal(AccessibilityService.GLOBAL_ACTION_HOME)
+        Action.Back -> performGlobal(AccessibilityService.GLOBAL_ACTION_BACK)
+        Action.Complete -> true
+    }
+
+    override suspend fun performClick(x: Float, y: Float): Boolean {
+        if (!isWithinScreen(x, y)) {
+            DiagnosticLogger.warn(TAG, "Click out of bounds: ($x,$y), screen=${screenWidth}x$screenHeight")
+        }
+        val (cx, cy) = clampToScreen(x, y)
+        val path = Path().apply { moveTo(cx, cy) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, DEFAULT_CLICK_MS)
+        return dispatchGesture(stroke, "Click($cx,$cy)")
+    }
+
+    override suspend fun performLongPress(x: Float, y: Float, durationMs: Long): Boolean {
+        if (!isWithinScreen(x, y)) {
+            DiagnosticLogger.warn(TAG, "LongPress out of bounds: ($x,$y)")
+        }
+        val (cx, cy) = clampToScreen(x, y)
+        val path = Path().apply { moveTo(cx, cy) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, max(durationMs, DEFAULT_CLICK_MS))
+        return dispatchGesture(stroke, "LongPress($cx,$cy,$durationMs)")
+    }
+
+    override suspend fun performDrag(
+        fromX: Float, fromY: Float,
+        toX: Float, toY: Float,
+        durationMs: Long
+    ): Boolean = performDrag(fromX, fromY, toX, toY, DEFAULT_HOLD_MS, durationMs)
+
+    override suspend fun performDrag(
+        fromX: Float, fromY: Float,
+        toX: Float, toY: Float,
+        holdMs: Long, dragMs: Long
+    ): Boolean {
+        if (!isWithinScreen(fromX, fromY) || !isWithinScreen(toX, toY)) {
+            DiagnosticLogger.warn(TAG, "Drag out of bounds: ($fromX,$fromY)->($toX,$toY)")
+        }
+        val (fx, fy) = clampToScreen(fromX, fromY)
+        val (tx, ty) = clampToScreen(toX, toY)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val path = Path().apply {
+                moveTo(fx, fy)
+                lineTo(tx, ty)
             }
-        }.also {
-            if (it == null) DiagnosticLogger.warn(TAG, "Screenshot capture returned null (timeout or failure)")
+            val pressMs = max(holdMs, 0)
+            val moveMs = max(dragMs, 100L)
+            val stroke = GestureDescription.StrokeDescription(path, pressMs, moveMs, true)
+            val result = dispatchGesture(stroke, "Drag($fx,$fy->$tx,$ty h=${pressMs}ms d=${moveMs}ms)")
+            kotlinx.coroutines.delay(SETTLE_MS)
+            return result
         }
+
+        // Fallback for pre-O: dispatch two separate strokes.
+        val pressPath = Path().apply { moveTo(fx, fy) }
+        val press = GestureDescription.StrokeDescription(pressPath, 0, holdMs)
+        val movePath = Path().apply {
+            moveTo(fx, fy)
+            lineTo(tx, ty)
+        }
+        val move = GestureDescription.StrokeDescription(movePath, 0, max(dragMs, 100L))
+        val pressOk = dispatchGesture(press, "Drag-press($fx,$fy)")
+        kotlinx.coroutines.delay(SETTLE_MS)
+        val moveOk = dispatchGesture(move, "Drag-move($fx,$fy->$tx,$ty)")
+        kotlinx.coroutines.delay(SETTLE_MS)
+        return pressOk && moveOk
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Gesture implementations
-    // ---------------------------------------------------------------------------------------------
-
-    private suspend fun performClick(x: Float, y: Float): Boolean {
-        if (!isValidCoordinate(x, y)) {
-            DiagnosticLogger.warn(TAG, "Click rejected: invalid coords ($x,$y)")
-            return false
-        }
-        val path = Path().apply { moveTo(x, y) }
-        return dispatchGesture(buildGestureDescription(path, CLICK_DURATION_MS))
-    }
-
-    private suspend fun performLongPress(x: Float, y: Float, durationMs: Long): Boolean {
-        if (!isValidCoordinate(x, y)) {
-            DiagnosticLogger.warn(TAG, "LongPress rejected: invalid coords ($x,$y)")
-            return false
-        }
-        val path = Path().apply { moveTo(x, y) }
-        return dispatchGesture(buildGestureDescription(path, durationMs))
-    }
-
-    private suspend fun performDrag(
+    private suspend fun performSwipe(
         fromX: Float, fromY: Float,
         toX: Float, toY: Float,
         durationMs: Long
     ): Boolean {
-        // Default split: hold the origin for half the duration, then move for the other half.
-        // Callers that need explicit control (e.g. mimicking a 600ms long-press followed by
-        // a 500ms drag, as required by most launchers' edit-mode threshold) should use the
-        // [performDrag] overload below that takes separate holdMs/dragMs.
-        val half = (durationMs / 2).coerceAtLeast(1L)
-        return performDrag(fromX, fromY, toX, toY, holdMs = half, dragMs = half)
-    }
-
-    /**
-     * Drag with an explicit long-press phase ([holdMs]) followed by a move phase ([dragMs]).
-     *
-     * This overload exists because most home screen launchers require a long-press (>~400ms)
-     * to enter edit mode before they will accept a drag. On API 26+ the two phases are
-     * implemented as a continued stroke; on API 24-25 (no continueStroke) we fall back to a
-     * single stroke that traces tiny circles at the origin (well below touch slop) to simulate
-     * the hold, then moves to the destination — see [buildDragGesture] for details.
-     */
-    suspend fun performDrag(
-        fromX: Float, fromY: Float,
-        toX: Float, toY: Float,
-        holdMs: Long,
-        dragMs: Long
-    ): Boolean {
-        if (!isValidCoordinate(fromX, fromY) || !isValidCoordinate(toX, toY)) {
-            DiagnosticLogger.warn(
-                TAG,
-                "Drag rejected: invalid coords ($fromX,$fromY)->($toX,$toY)"
-            )
-            return false
+        if (!isWithinScreen(fromX, fromY) || !isWithinScreen(toX, toY)) {
+            DiagnosticLogger.warn(TAG, "Swipe out of bounds: ($fromX,$fromY)->($toX,$toY)")
         }
-        val gesture = buildDragGesture(fromX, fromY, toX, toY, holdMs, dragMs)
-        return dispatchGesture(gesture)
+        val (fx, fy) = clampToScreen(fromX, fromY)
+        val (tx, ty) = clampToScreen(toX, toY)
+        val path = Path().apply {
+            moveTo(fx, fy)
+            lineTo(tx, ty)
+        }
+        val stroke = GestureDescription.StrokeDescription(
+            path,
+            0,
+            max(durationMs, DEFAULT_SWIPE_MS)
+        )
+        return dispatchGesture(stroke, "Swipe($fx,$fy->$tx,$ty)")
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Gesture description builders
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * Builds a single-stroke [GestureDescription] along [path] lasting [durationMs].
-     */
-    private fun buildGestureDescription(path: Path, durationMs: Long): GestureDescription {
-        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
-        return GestureDescription.Builder().addStroke(stroke).build()
-    }
-
-    /**
-     * Builds a drag gesture composed of a long-press phase ([holdMs]) followed by a move
-     * phase ([dragMs]).
-     *
-     * - API 26+: two continued strokes (hold at origin → move to target). This is the only
-     *   way to express a true press-and-hold followed by a drag with a single pointer.
-     * - API 24-25: `continueStroke` / `willContinue` don't exist, so we cannot split the
-     *   gesture into two strokes. Naively drawing a single line from origin to target fails
-     *   because the pointer starts moving immediately and never triggers the launcher's
-     *   long-press threshold (typically ~400ms) — the drag is silently ignored. Instead we
-     *   trace tiny circles (radius `slop`, well below the ~8dp touch slop) at the origin so
-     *   the system sees the pointer as effectively stationary during the [holdMs] portion,
-     *   then we draw a line to the target. The system allocates stroke time proportionally
-     *   to arc length, so we size the circle portion so that its arc length matches the
-     *   hold:drag time ratio. This was previously implemented inline in
-     *   `AutoAppOrganizerService.dragAndDrop` and has been consolidated here so both the
-     *   legacy organize path and the Agent framework share a single, tested implementation.
-     */
-    private fun buildDragGesture(
-        fromX: Float, fromY: Float,
-        toX: Float, toY: Float,
-        holdMs: Long,
-        dragMs: Long
-    ): GestureDescription {
-        val totalMs = (holdMs + dragMs).coerceAtLeast(1L)
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // ① Hold phase: pointer stays at the origin. willContinue=true keeps it pressed.
-            val downPath = Path().apply { moveTo(fromX, fromY) }
-            val downStroke = GestureDescription.StrokeDescription(
-                downPath, 0, holdMs.coerceAtLeast(1L), /* willContinue = */ true
-            )
-
-            // ② Move phase: continues from downStroke, moves to target, then releases.
-            val movePath = Path().apply {
-                moveTo(fromX, fromY)
-                lineTo(toX, toY)
-            }
-            val moveStroke = downStroke.continueStroke(
-                movePath, 0, dragMs.coerceAtLeast(1L), /* willContinue = */ false
-            )
-
-            GestureDescription.Builder()
-                .addStroke(downStroke)
-                .addStroke(moveStroke)
-                .build()
-        } else {
-            // API 24-25: simulated long-press via tiny circles at the origin.
-            // See method kdoc for why this is necessary and how the geometry is derived.
-            val slop = 4f
-            val dragDist = hypot(toX - fromX, toY - fromY).coerceAtLeast(1f)
-            val holdRatio = holdMs.toFloat() / totalMs.toFloat()
-            // Arc length needed for the hold phase so that time-proportional allocation
-            // gives us ~holdMs of stationary time before the lineTo(toX, toY) segment.
-            val holdLength = if (holdRatio < 1f) {
-                (holdRatio / (1f - holdRatio)) * dragDist
+    private suspend fun performType(text: String): Boolean {
+        DiagnosticLogger.debug(TAG, "Type action requested for ${text.length} chars")
+        return try {
+            val root = service.rootInActiveWindow
+            val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focused != null && focused.isEditable) {
+                val bundle = android.os.Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                }
+                val ok = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
+                focused.recycle()
+                root.recycle()
+                ok
             } else {
-                // Edge case: dragMs == 0 → all time is hold; cap the loops to avoid huge paths.
-                dragDist * 40f
+                // Fallback: try shell input (requires ADB/root; gracefully degrades).
+                Runtime.getRuntime().exec(arrayOf("input", "text", text.replace(" ", "%s"))).waitFor()
+                true
             }
-            val circumference = 2f * Math.PI.toFloat() * slop
-            val loops = (holdLength / circumference).toInt().coerceIn(2, 40)
-            val ptsPerLoop = 10
-            val path = Path().apply {
-                moveTo(fromX, fromY)
-                val total = loops * ptsPerLoop
-                var i = 0
-                while (i < total) {
-                    val angle = 2f * Math.PI.toFloat() * i / ptsPerLoop
-                    lineTo(fromX + slop * cos(angle), fromY + slop * sin(angle))
-                    i++
-                }
-                lineTo(fromX, fromY) // return to origin before moving to target
-                lineTo(toX, toY)
-            }
-            val stroke = GestureDescription.StrokeDescription(path, 0, totalMs)
-            GestureDescription.Builder().addStroke(stroke).build()
-        }
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Gesture dispatch
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * Dispatches [gesture] and suspends until it completes or is cancelled, bounded by
-     * [GESTURE_TIMEOUT_MS]. Returns `false` on cancellation or timeout.
-     */
-    private suspend fun dispatchGesture(gesture: GestureDescription): Boolean {
-        return withTimeoutOrNull(GESTURE_TIMEOUT_MS) {
-            suspendCancellableCoroutine { cont ->
-                try {
-                    val dispatched = service.dispatchGesture(
-                        gesture,
-                        object : AccessibilityService.GestureResultCallback() {
-                            override fun onCompleted(
-                                gestureDescription: GestureDescription?,
-                                motionEvent: MotionEvent?
-                            ) {
-                                if (cont.isActive) cont.resume(true)
-                            }
-
-                            override fun onCancelled(
-                                gestureDescription: GestureDescription?,
-                                motionEvent: MotionEvent?
-                            ) {
-                                DiagnosticLogger.warn(TAG, "Gesture cancelled by system")
-                                if (cont.isActive) cont.resume(false)
-                            }
-                        },
-                        /* handler = */ null
-                    )
-                    if (!dispatched) {
-                        DiagnosticLogger.warn(TAG, "dispatchGesture returned false immediately")
-                        if (cont.isActive) cont.resume(false)
-                    }
-                } catch (e: Exception) {
-                    DiagnosticLogger.error(TAG, "dispatchGesture threw: ${e.message}")
-                    if (cont.isActive) cont.resume(false)
-                }
-            }
-        } ?: run {
-            DiagnosticLogger.warn(TAG, "Gesture timed out after ${GESTURE_TIMEOUT_MS}ms")
+        } catch (e: Exception) {
+            DiagnosticLogger.error(TAG, "Type failed: ${e.message}")
             false
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------------------------------------------
+    private suspend fun performGlobal(globalAction: Int): Boolean {
+        return try {
+            service.performGlobalAction(globalAction)
+        } catch (e: Exception) {
+            DiagnosticLogger.error(TAG, "Global action $globalAction failed: ${e.message}")
+            false
+        }
+    }
+
+    private suspend fun dispatchGesture(
+        stroke: GestureDescription.StrokeDescription,
+        label: String
+    ): Boolean = suspendCancellableCoroutine { cont ->
+        val builder = GestureDescription.Builder().addStroke(stroke)
+        val dispatched = service.dispatchGesture(builder.build(), object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                DiagnosticLogger.debug(TAG, "Gesture completed: $label")
+                if (cont.isActive) cont.resume(true)
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                DiagnosticLogger.warn(TAG, "Gesture cancelled: $label")
+                if (cont.isActive) cont.resume(false)
+            }
+        }, mainHandler)
+
+        if (!dispatched) {
+            DiagnosticLogger.error(TAG, "dispatchGesture rejected immediately: $label")
+            cont.resume(false)
+        }
+    }
 
     /**
-     * `true` when both coordinates are non-negative (i.e. plausible screen coordinates).
+     * Capture a screenshot via the accessibility API.
+     *
+     * NOTE: Prefer taking the screenshot through the perception layer
+     * ([AccessibilityChannel]) in production to keep screenshot logic in one place.
+     * This method is kept to satisfy [GestureEngine.takeScreenshot] for tests and
+     * simple callers; it delegates to the same accessibility API.
      */
-    private fun isValidCoordinate(x: Float, y: Float): Boolean = x >= 0f && y >= 0f
+    override suspend fun takeScreenshot(): Bitmap? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            DiagnosticLogger.warn(TAG, "Screenshot requires API 30+")
+            return null
+        }
+        val displayId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            service.display?.displayId ?: 0
+        } else 0
+        return suspendCancellableCoroutine { cont ->
+            service.takeScreenshot(displayId, service.mainExecutor) { screenshot ->
+                val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
+                    DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
+                    null
+                } else {
+                    screenshot.bitmap
+                }
+                if (cont.isActive) cont.resume(bitmap)
+            }
+        }
+    }
 }
