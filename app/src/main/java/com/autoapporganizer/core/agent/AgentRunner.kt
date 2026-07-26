@@ -1,7 +1,7 @@
 package com.autoapporganizer.core.agent
 
 import com.autoapporganizer.core.action.Action
-import com.autoapporganizer.core.action.GestureExecutor
+import com.autoapporganizer.core.action.GestureEngine
 import com.autoapporganizer.core.model.VisionResult
 import com.autoapporganizer.core.perception.AccessibilityChannel
 import com.autoapporganizer.core.perception.VisionChannel
@@ -15,18 +15,18 @@ import kotlinx.coroutines.delay
  *  1. Scans the accessibility tree for the current perception.
  *  2. Optionally queries the vision channel (if a VLM is available).
  *  3. Asks the task to [AgentTask.reason] about the next action.
- *  4. Executes the action via [GestureExecutor].
+ *  4. Executes the action via [GestureEngine].
  *  5. Lets the task [AgentTask.observe] the result and update state.
  *
  * The loop terminates when the task signals completion, when [AgentTask.maxSteps]
  * is reached, or when the action is [Action.Complete].
  *
- * @param executor           Translates actions into accessibility gestures.
+ * @param engine             Translates actions into accessibility gestures.
  * @param perceptionChannel  Accessibility-based perception source.
  * @param visionChannel      Vision-based perception source (VLM).
  */
 class AgentRunner(
-    private val executor: GestureExecutor,
+    private val engine: GestureEngine,
     private val perceptionChannel: AccessibilityChannel,
     private val visionChannel: VisionChannel
 ) {
@@ -56,11 +56,9 @@ class AgentRunner(
         DiagnosticLogger.info(TAG, "Task description: $description")
 
         var state = TaskState()
-        var visionAvailable = false
-        try {
-            visionAvailable = visionChannel.let { true } // presence check; actual use guarded by isAvailable
-        } catch (e: Exception) {
-            DiagnosticLogger.warn(TAG, "Vision channel check failed: ${e.message}")
+        val visionAvailable = runCatching { visionChannel.isAvailable() }.getOrElse { false }
+        if (!visionAvailable) {
+            DiagnosticLogger.warn(TAG, "Vision channel not available; running in accessibility-only mode")
         }
 
         // Cache of the most recent VLM result, plus the step at which it was produced.
@@ -94,8 +92,8 @@ class AgentRunner(
                     if (cachedVision != null) {
                         DiagnosticLogger.debug(
                             TAG,
-                            "Vision reuse: skipping VLM call at step ${state.step} " +
-                                "(last pass at $cachedVisionStep, needsVision=${task.needsVision(state)})"
+                            "Vision reuse: skipping VLM call at step ${state.step + 1} " +
+                                "(last pass at ${cachedVisionStep + 1}, needsVision=${task.needsVision(state)})"
                         )
                     }
                     cachedVision
@@ -116,12 +114,12 @@ class AgentRunner(
                 }
 
                 // ── Act ───────────────────────────────────────────────────
-                val success = executor.execute(action)
+                val success = engine.execute(action)
 
                 // ── Observe ───────────────────────────────────────────────
                 state = task.observe(action, success, state)
 
-                val progress = ((state.step + 1).toFloat() / task.maxSteps * 100).toInt().coerceIn(0, 100)
+                val progress = calculateProgress(state, task)
                 onProgress(progress, "步骤 ${state.step}: ${action.describe()}")
 
                 if (task.isComplete(state)) {
@@ -155,5 +153,11 @@ class AgentRunner(
                 foldersCreated = task.getFoldersCreated()
             )
         }
+    }
+
+    private fun calculateProgress(state: TaskState, task: AgentTask): Int {
+        // Cap progress at 95% until the task explicitly completes; reserve 100% for done.
+        val raw = ((state.step.toFloat() / task.maxSteps) * 95f).toInt()
+        return raw.coerceIn(0, 95)
     }
 }
