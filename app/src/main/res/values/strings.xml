@@ -110,7 +110,9 @@
     <string name="vlm_provider_openai">OpenAI 兼容</string>
     <string name="vlm_provider_gemini">Gemini</string>
     <string name="vlm_provider_glm">GLM-4V</string>
+    <string name="vlm_provider_local">本地模型（Ollama 等）</string>
     <string name="vlm_hint_endpoint">留空使用默认端点</string>
+    <string name="vlm_hint_endpoint_local">http://localhost:11434/v1/chat/completions</string>
     <string name="vlm_hint_model">如 gpt-4o / gemini-2.0-flash / glm-4v</string>
     <string name="vlm_saved">模型配置已保存</string>
 </resources>

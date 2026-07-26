@@ -1,58 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- ============================================================
-         AutoAppOrganizer — Warm Editorial Palette
-         Direction: warm bone paper + ink black + terracotta accent.
-         Calm, refined, magazine-like. No cold slate blues.
+         AutoAppOrganizer — Blue & White Premium Palette
+         Direction: clean slate white + crisp cobalt blue accent.
+         Professional, airy, high-end.
          ============================================================ -->
 
     <!-- ===== Brand ===== -->
-    <color name="primary">#C2410C</color>            <!-- terracotta 700 -->
-    <color name="primary_dark">#9A3412</color>         <!-- terracotta 800 -->
-    <color name="primary_light">#EA580C</color>        <!-- terracotta 600 -->
-    <color name="accent">#15803D</color>               <!-- forest 700 — used sparingly -->
-    <color name="on_primary">#FFF7ED</color>           <!-- orange-50 paper on terracotta -->
+    <color name="primary">#2563EB</color>            <!-- blue 600 -->
+    <color name="primary_dark">#1D4ED8</color>       <!-- blue 700 -->
+    <color name="primary_light">#3B82F6</color>      <!-- blue 500 -->
+    <color name="accent">#0EA5E9</color>             <!-- sky 500 -->
+    <color name="on_primary">#FFFFFF</color>         <!-- white on primary -->
 
-    <!-- ===== Surface & Background (warm paper tones) ===== -->
-    <color name="background_light">#FAF6F0</color>     <!-- warm bone -->
-    <color name="background_dark">#14110E</color>      <!-- warm near-black -->
+    <!-- ===== Surface & Background (cool white tones) ===== -->
+    <color name="background_light">#F8FAFC</color>   <!-- slate 50 -->
+    <color name="background_dark">#0F172A</color>    <!-- slate 900 -->
     <color name="surface_light">#FFFFFF</color>
-    <color name="surface_dark">#1F1A15</color>
-    <color name="surface_alt_light">#F3ECE2</color>    <!-- recessed panel -->
-    <color name="surface_alt_dark">#262019</color>
-    <color name="card_stroke_light">#E8DDCD</color>
-    <color name="card_stroke_dark">#3A3127</color>
+    <color name="surface_dark">#1E293B</color>
+    <color name="surface_alt_light">#F1F5F9</color>  <!-- recessed panel -->
+    <color name="surface_alt_dark">#334155</color>
+    <color name="card_stroke_light">#E2E8F0</color>
+    <color name="card_stroke_dark">#334155</color>
 
-    <!-- ===== Text (warm ink) ===== -->
-    <color name="text_primary_light">#1C1917</color>   <!-- stone 900 -->
-    <color name="text_primary_dark">#F5EFE6</color>
-    <color name="text_secondary_light">#57534E</color> <!-- stone 600 -->
-    <color name="text_secondary_dark">#A8A29E</color>
-    <color name="text_tertiary_light">#A8A29E</color>  <!-- stone 400 -->
-    <color name="text_tertiary_dark">#78716C</color>
+    <!-- ===== Text (cool ink) ===== -->
+    <color name="text_primary_light">#0F172A</color>   <!-- slate 900 -->
+    <color name="text_primary_dark">#F8FAFC</color>
+    <color name="text_secondary_light">#475569</color> <!-- slate 600 -->
+    <color name="text_secondary_dark">#CBD5E1</color>
+    <color name="text_tertiary_light">#94A3B8</color>  <!-- slate 400 -->
+    <color name="text_tertiary_dark">#64748B</color>
 
     <!-- ===== Semantic ===== -->
-    <color name="success">#15803D</color>
-    <color name="error">#B91C1C</color>
-    <color name="warning">#B45309</color>
+    <color name="success">#16A34A</color>
+    <color name="error">#DC2626</color>
+    <color name="warning">#EAB308</color>
 
     <!-- ===== Legacy aliases (keep backward compat for existing refs) ===== -->
-    <color name="purple_200">#FED7AA</color>
-    <color name="purple_500">#C2410C</color>
-    <color name="purple_700">#9A3412</color>
-    <color name="teal_200">#BBF7D0</color>
-    <color name="teal_700">#15803D</color>
+    <color name="purple_200">#BFDBFE</color>
+    <color name="purple_500">#2563EB</color>
+    <color name="purple_700">#1D4ED8</color>
+    <color name="teal_200">#7DD3FC</color>
+    <color name="teal_700">#0EA5E9</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 
     <!-- ===== Aliases used directly by layouts (theme-resolved) ===== -->
-    <color name="background">#FAF6F0</color>
+    <color name="background">#F8FAFC</color>
     <color name="surface">#FFFFFF</color>
-    <color name="surface_alt">#F3ECE2</color>
-    <color name="text_primary">#1C1917</color>
-    <color name="text_secondary">#57534E</color>
-    <color name="text_tertiary">#A8A29E</color>
-    <color name="log_bg">#1C1917</color>               <!-- dark ink panel for log -->
-    <color name="log_text">#D6CFC4</color>
-    <color name="hairline">#E8DDCD</color>
+    <color name="surface_alt">#F1F5F9</color>
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#475569</color>
+    <color name="text_tertiary">#94A3B8</color>
+    <color name="log_bg">#0F172A</color>               <!-- dark ink panel for log -->
+    <color name="log_text">#E2E8F0</color>
+    <color name="hairline">#E2E8F0</color>
 </resources>

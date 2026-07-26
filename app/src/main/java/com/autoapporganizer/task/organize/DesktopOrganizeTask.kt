@@ -7,6 +7,7 @@ import com.autoapporganizer.core.agent.AgentTask
 import com.autoapporganizer.core.agent.TaskState
 import com.autoapporganizer.core.model.VisionResult
 import com.autoapporganizer.core.perception.AccessibilityChannel
+import com.autoapporganizer.core.perception.PerceptionFusion
 import com.autoapporganizer.core.perception.ScreenElement
 import com.autoapporganizer.core.perception.VisionChannel
 import com.autoapporganizer.util.CategoryMatcher
@@ -17,15 +18,15 @@ import com.autoapporganizer.util.PrefsManager
  * Vision-driven desktop organization task.
  *
  * Uses the hybrid perception stack (accessibility + optional VLM) to locate app icons,
- * categorize them via [CategoryMatcher], and issue long-press + drag gestures to group
- * same-category icons into folders on the home screen.
+ * categorize them via [CategoryMatcher], and issue drag gestures to group same-category
+ * icons into folders on the home screen.
  *
  * State machine phases (tracked in [TaskState.context]["phase"]):
- *  - "scan"     — initial desktop scan + categorization
- *  - "press"    — long-press the anchor icon to trigger folder creation
- *  - "drag"     — drag remaining category members into the new folder
- *  - "next"     — move to the next category
- *  - "done"     — all categories processed
+ *  - "scan"  — pick the next category and create a folder by dragging the anchor icon
+ *              onto the second icon of the same category.
+ *  - "drag"  — drag remaining category members into the folder created in "scan".
+ *  - "next"  — category finished; advance to the next category or complete.
+ *  - "done"  — all categories processed.
  */
 class DesktopOrganizeTask(
     private val perceptionChannel: AccessibilityChannel,
@@ -40,14 +41,15 @@ class DesktopOrganizeTask(
         private const val PHASE = "phase"
         private const val CATEGORY = "category"
         private const val DRAG_INDEX = "dragIndex"
-        private const val ANCHOR_X = "anchorX"
-        private const val ANCHOR_Y = "anchorY"
-        private const val FOLDER_X = "folderX"
-        private const val FOLDER_Y = "folderY"
+        private const val FOLDER_BOUNDS = "folderBounds"
+
+        /** Minimum overlap ratio to consider a perception element a folder candidate. */
+        private const val FOLDER_MIN_SIZE_PX = 80
+        private const val FOLDER_MAX_SIZE_PX = 400
     }
 
     override val name: String = "桌面图标视觉整理"
-    override val maxSteps: Int = 30
+    override val maxSteps: Int = 60
 
     private var foldersCreated = 0
     private val categoryMatcher = CategoryMatcher(service)
@@ -58,9 +60,6 @@ class DesktopOrganizeTask(
     /** Ordered list of categories that have enough members to form a folder. */
     private var categoryQueue: MutableList<String> = mutableListOf()
 
-    /** Bounds of the folder currently being filled (updated after each long-press). */
-    private var currentFolderBounds: Rect? = null
-
     // ──────────────────────────────────────────────
     // AgentTask implementation
     // ──────────────────────────────────────────────
@@ -70,8 +69,8 @@ class DesktopOrganizeTask(
         val visionItems = vision.detectIcons()
         DiagnosticLogger.info(TAG, "describe: a11y=${perception.size} vision=${visionItems.size}")
 
-        // Merge: prefer accessibility elements, supplement with vision-only ones.
-        val merged = mergePerception(perception, visionItems)
+        // Merge accessibility and vision evidence using the dedicated fusion layer.
+        val merged = PerceptionFusion.merge(visionItems, perception)
         categorized = categorize(merged)
 
         // Only keep categories that meet the minimum folder size.
@@ -81,7 +80,11 @@ class DesktopOrganizeTask(
             .keys
             .toMutableList()
 
-        DiagnosticLogger.info(TAG, "describe: ${merged.size} icons, ${categorized.size} categories, ${categoryQueue.size} worth organizing (minFolderSize=$minSize)")
+        DiagnosticLogger.info(
+            TAG,
+            "describe: ${merged.size} icons, ${categorized.size} categories, " +
+                "${categoryQueue.size} worth organizing (minFolderSize=$minSize)"
+        )
 
         return "发现 ${merged.size} 个图标，分为 ${categorized.size} 类，其中 ${categoryQueue.size} 类可整理"
     }
@@ -94,79 +97,89 @@ class DesktopOrganizeTask(
         val phase = state.context[PHASE] as? String ?: "scan"
 
         return when (phase) {
-            "scan" -> {
-                // Move to the first category and start pressing.
-                if (categoryQueue.isEmpty()) {
-                    DiagnosticLogger.info(TAG, "reason: no categories to organize")
-                    return Action.Complete
-                }
-                val cat = categoryQueue.first()
-                val elements = categorized[cat].orEmpty()
-                if (elements.isEmpty()) {
-                    DiagnosticLogger.warn(TAG, "reason: category '$cat' has no elements, skipping")
-                    categoryQueue.removeAt(0)
-                    return Action.Wait(100)
-                }
-                val anchor = elements.first()
-                DiagnosticLogger.info(TAG, "reason: pressing anchor for '$cat' at (${anchor.centerX}, ${anchor.centerY})")
-                Action.LongPress(anchor.centerX, anchor.centerY, 600L)
-            }
-
-            "press" -> {
-                // Folder should have been created; now we need to locate it.
-                // Use the second icon's position as a hint, then scan for nearby folder.
-                val cat = state.context[CATEGORY] as? String ?: categoryQueue.firstOrNull() ?: return Action.Complete
-                val elements = categorized[cat].orEmpty()
-                if (elements.size < 2) {
-                    // Only one icon — nothing to drag in; move to next category.
-                    DiagnosticLogger.info(TAG, "reason: category '$cat' has only 1 element, skipping")
-                    categoryQueue.remove(cat)
-                    foldersCreated++
-                    return Action.Wait(300)
-                }
-                val second = elements[1]
-                // Try to find a folder node near the second icon.
-                val folderBounds = findFolderNear(perception, second.bounds)
-                currentFolderBounds = folderBounds ?: second.bounds
-                DiagnosticLogger.info(TAG, "reason: folder bounds for '$cat' = $currentFolderBounds, starting drag")
-                Action.Drag(second.centerX, second.centerY, currentFolderBounds!!.exactCenterX(), currentFolderBounds!!.exactCenterY(), 800L)
-            }
-
-            "drag" -> {
-                val cat = state.context[CATEGORY] as? String ?: return Action.Complete
-                val elements = categorized[cat].orEmpty()
-                val dragIndex = (state.context[DRAG_INDEX] as? Int) ?: 2 // start from 3rd element (0=anchor, 1=already dragged)
-
-                if (dragIndex >= elements.size) {
-                    // All elements in this category have been dragged.
-                    DiagnosticLogger.info(TAG, "reason: category '$cat' complete ($foldersCreated folders)")
-                    foldersCreated++
-                    categoryQueue.remove(cat)
-                    return Action.Wait(500)
-                }
-
-                val target = elements[dragIndex]
-                val folder = currentFolderBounds ?: return Action.Complete
-                DiagnosticLogger.info(TAG, "reason: dragging element[$dragIndex] of '$cat' to folder")
-                Action.Drag(target.centerX, target.centerY, folder.exactCenterX(), folder.exactCenterY(), 800L)
-            }
-
-            "next" -> {
-                if (categoryQueue.isEmpty()) {
-                    DiagnosticLogger.info(TAG, "reason: all categories done")
-                    return Action.Complete
-                }
-                DiagnosticLogger.info(TAG, "reason: moving to next category '${categoryQueue.first()}'")
-                Action.Wait(500)
-            }
-
+            "scan" -> reasonScan(state)
+            "drag" -> reasonDrag(state, perception)
+            "next" -> reasonNext()
+            "done" -> Action.Complete
             else -> Action.Complete
+        }
+    }
+
+    private fun reasonScan(state: TaskState): Action {
+        // Drop empty or too-small categories silently.
+        while (categoryQueue.isNotEmpty()) {
+            val cat = categoryQueue.first()
+            val elements = categorized[cat].orEmpty()
+            if (elements.size >= 2) break
+            DiagnosticLogger.warn(TAG, "reason: category '$cat' has ${elements.size} elements, skipping")
+            categoryQueue.removeAt(0)
+        }
+
+        if (categoryQueue.isEmpty()) {
+            DiagnosticLogger.info(TAG, "reason: no categories left to organize")
+            return Action.Complete
+        }
+
+        val cat = categoryQueue.first()
+        val elements = categorized[cat].orEmpty()
+        val anchor = elements[0]
+        val second = elements[1]
+
+        DiagnosticLogger.info(
+            TAG,
+            "reason: creating folder for '$cat' by dragging ${anchor.label} onto ${second.label}"
+        )
+        return Action.Drag(
+            anchor.centerX, anchor.centerY,
+            second.centerX, second.centerY,
+            durationMs = 800L
+        )
+    }
+
+    private fun reasonDrag(state: TaskState, perception: List<ScreenElement>): Action {
+        val cat = state.context[CATEGORY] as? String ?: return Action.Complete
+        val elements = categorized[cat].orEmpty()
+        val dragIndex = (state.context[DRAG_INDEX] as? Int) ?: 2
+
+        if (dragIndex >= elements.size) {
+            DiagnosticLogger.info(TAG, "reason: category '$cat' drag complete")
+            return Action.Wait(300)
+        }
+
+        // Re-locate the folder on every drag: launchers often re-grid icons after each drop,
+        // so the folder coordinate cached at creation time may be stale.
+        val folderBounds = locateFolder(perception, state)
+            ?: return Action.Complete
+
+        val target = elements[dragIndex]
+        DiagnosticLogger.info(
+            TAG,
+            "reason: dragging ${target.label}[$dragIndex] into '$cat' folder at $folderBounds"
+        )
+        return Action.Drag(
+            target.centerX, target.centerY,
+            folderBounds.exactCenterX(), folderBounds.exactCenterY(),
+            durationMs = 800L
+        )
+    }
+
+    private fun reasonNext(): Action {
+        return if (categoryQueue.isEmpty()) {
+            DiagnosticLogger.info(TAG, "reason: all categories done")
+            Action.Complete
+        } else {
+            DiagnosticLogger.info(TAG, "reason: moving to next category '${categoryQueue.first()}'")
+            Action.Wait(400)
         }
     }
 
     override suspend fun observe(action: Action, result: Boolean, state: TaskState): TaskState {
         val phase = state.context[PHASE] as? String ?: "scan"
-        val errors = if (!result) state.errors + "Action ${action.describe()} failed at step ${state.step}" else state.errors
+        val errors = if (!result) {
+            state.errors + "Action ${action.describe()} failed at step ${state.step}"
+        } else {
+            state.errors
+        }
 
         val newContext = state.context.toMutableMap()
         var newItems = state.itemsOrganized
@@ -174,40 +187,45 @@ class DesktopOrganizeTask(
         when (phase) {
             "scan" -> {
                 if (result) {
-                    newContext[PHASE] = "press"
-                    val cat = categoryQueue.firstOrNull()
-                    if (cat != null) {
-                        newContext[CATEGORY] = cat
-                        val anchor = categorized[cat]?.firstOrNull()
-                        if (anchor != null) {
-                            newContext[ANCHOR_X] = anchor.centerX
-                            newContext[ANCHOR_Y] = anchor.centerY
-                        }
+                    val cat = categoryQueue.firstOrNull() ?: return markDone(state, errors)
+                    val elements = categorized[cat].orEmpty()
+                    if (elements.size < 2) {
+                        categoryQueue.removeAt(0)
+                        return state.copy(step = state.step + 1, errors = errors)
                     }
-                }
-            }
 
-            "press" -> {
-                if (result) {
+                    // The folder should now exist near the second icon. Use the second icon's
+                    // original bounds as the initial folder location; reasonDrag will re-locate
+                    // it before each subsequent drop.
                     newContext[PHASE] = "drag"
-                    newContext[DRAG_INDEX] = 2 // next element to drag (0=anchor, 1=just dragged)
-                    newItems++
+                    newContext[CATEGORY] = cat
+                    newContext[DRAG_INDEX] = 2
+                    newContext[FOLDER_BOUNDS] = elements[1].bounds
+                    foldersCreated++
+                    newItems += 2 // anchor + second are now inside the folder
+                    DiagnosticLogger.info(TAG, "observe: folder created for '$cat'")
                 } else {
-                    DiagnosticLogger.warn(TAG, "observe: press failed, retrying")
+                    DiagnosticLogger.warn(TAG, "observe: folder creation failed, will retry")
                 }
             }
 
             "drag" -> {
                 if (result) {
-                    val cat = state.context[CATEGORY] as? String
+                    val cat = state.context[CATEGORY] as? String ?: return markDone(state, errors)
                     val elements = categorized[cat].orEmpty()
                     val currentDragIndex = (state.context[DRAG_INDEX] as? Int) ?: 2
-                    newContext[DRAG_INDEX] = currentDragIndex + 1
+                    val nextDragIndex = currentDragIndex + 1
+                    newContext[DRAG_INDEX] = nextDragIndex
                     newItems++
 
-                    // Check if we've dragged all elements for this category.
-                    if (currentDragIndex + 1 >= elements.size) {
+                    if (nextDragIndex >= elements.size) {
+                        // All icons for this category have been moved into the folder.
+                        categoryQueue.remove(cat)
                         newContext[PHASE] = "next"
+                        newContext.remove(CATEGORY)
+                        newContext.remove(DRAG_INDEX)
+                        newContext.remove(FOLDER_BOUNDS)
+                        DiagnosticLogger.info(TAG, "observe: category '$cat' complete ($foldersCreated folders)")
                     }
                 } else {
                     DiagnosticLogger.warn(TAG, "observe: drag failed, will retry")
@@ -217,9 +235,6 @@ class DesktopOrganizeTask(
             "next" -> {
                 if (categoryQueue.isNotEmpty()) {
                     newContext[PHASE] = "scan"
-                    newContext.remove(CATEGORY)
-                    newContext.remove(DRAG_INDEX)
-                    currentFolderBounds = null
                 } else {
                     newContext[PHASE] = "done"
                 }
@@ -240,17 +255,13 @@ class DesktopOrganizeTask(
     }
 
     /**
-     * Vision is only useful when we need to *locate* something visually:
-     *  - "scan"  : the initial icon scan already happened in [describe]; a per-step vision
-     *              pass helps when accessibility missed icons and we want to supplement.
-     *  - "press" : a folder was just created and may have been re-gridded; a vision pass
-     *              can pin down its real bounds when accessibility fails.
-     * "drag" and "next" operate on coordinates already in [categorized] / [currentFolderBounds]
-     * and do not benefit from another cloud call, so we skip them.
+     * Vision is useful when accessibility alone may miss icons or folders:
+     *  - "scan" : initial icon discovery
+     *  - "drag" : folder re-location after each drop
      */
     override fun needsVision(state: TaskState): Boolean {
         val phase = state.context[PHASE] as? String ?: "scan"
-        return phase == "scan" || phase == "press"
+        return phase == "scan" || phase == "drag"
     }
 
     override fun getFoldersCreated(): Int = foldersCreated
@@ -259,44 +270,45 @@ class DesktopOrganizeTask(
     // Helpers
     // ──────────────────────────────────────────────
 
-    /** Merge accessibility and vision perception, preferring accessibility elements. */
-    private fun mergePerception(
-        a11y: List<ScreenElement>,
-        vision: List<ScreenElement>
-    ): List<ScreenElement> {
-        if (vision.isEmpty()) return a11y
-        val result = a11y.toMutableList()
-        for (v in vision) {
-            val overlap = a11y.any { a ->
-                android.graphics.Rect.intersects(a.bounds, v.bounds) &&
-                    a.label.equals(v.label, ignoreCase = true)
-            }
-            if (!overlap) result.add(v)
-        }
-        return result
-    }
-
     /** Categorize screen elements using [CategoryMatcher]. */
     private fun categorize(elements: List<ScreenElement>): Map<String, List<ScreenElement>> {
         return elements.groupBy { categoryMatcher.matchCategory(it.label) }
     }
 
     /**
-     * Find a folder node in the perception whose bounds are near [hint].
-     * Falls back to null if no folder-like node is found.
+     * Locate the folder created in the current category.
+     *
+     * 1. Search the latest perception for a large element near the original folder hint.
+     * 2. Fall back to the cached hint from "scan".
+     * 3. If neither exists, abort the category.
      */
-    private fun findFolderNear(perception: List<ScreenElement>, hint: Rect): Rect? {
-        // A folder node is typically larger than an icon and may have no label
-        // or a label like "文件夹". Look for the nearest large element.
-        return perception
-            .filter { it.bounds.width() in 80..400 && it.bounds.height() in 80..400 }
+    private fun locateFolder(perception: List<ScreenElement>, state: TaskState): Rect? {
+        val hint = state.context[FOLDER_BOUNDS] as? Rect
+        val cat = state.context[CATEGORY] as? String
+
+        // Try finding a folder node in the current perception.
+        val folder = perception
+            .filter { it.bounds.width() in FOLDER_MIN_SIZE_PX..FOLDER_MAX_SIZE_PX && it.bounds.height() in FOLDER_MIN_SIZE_PX..FOLDER_MAX_SIZE_PX }
             .minByOrNull { elem ->
-                val cx = elem.bounds.exactCenterX()
-                val cy = elem.bounds.exactCenterY()
-                val dx = cx - hint.exactCenterX()
-                val dy = cy - hint.exactCenterY()
+                val hintRect = hint ?: return@minByOrNull Int.MAX_VALUE
+                val dx = elem.bounds.exactCenterX() - hintRect.exactCenterX()
+                val dy = elem.bounds.exactCenterY() - hintRect.exactCenterY()
                 (dx * dx + dy * dy).toInt()
             }
             ?.bounds
+
+        if (folder != null && hint != null && folder != hint) {
+            DiagnosticLogger.debug(TAG, "locateFolder: folder moved from $hint to $folder")
+        }
+
+        return folder ?: hint
+    }
+
+    private fun markDone(state: TaskState, errors: List<String>): TaskState {
+        return state.copy(
+            step = state.step + 1,
+            errors = errors,
+            context = state.context.toMutableMap().apply { put(PHASE, "done") }
+        )
     }
 }
