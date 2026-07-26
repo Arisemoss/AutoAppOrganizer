@@ -42,12 +42,15 @@ android {
 
     testOptions {
         unitTests {
-            isIncludeAndroidResources = true
+            isIncludeAndroidResources = false
+            isReturnDefaultValues = true
         }
     }
 }
 
 dependencies {
+    // Android framework stubs for unit tests
+    testImplementation(files("/opt/android-sdk/platforms/android-35/android.jar"))
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
@@ -60,8 +63,8 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.14")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.mockito:mockito-core:5.12.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 }

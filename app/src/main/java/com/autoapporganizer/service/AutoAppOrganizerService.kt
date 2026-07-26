@@ -405,12 +405,40 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
             }
         }
 
+        // 备份当前桌面
+        reportProgress(10, "正在备份桌面…")
+        currentBackup = backupDesktop()
+        if (currentBackup != null) {
+            backupManager.saveBackup(currentBackup!!)
+        }
+
         val result = runner.run(task) { progress, msg ->
             reportProgress(progress, msg)
         }
 
         val folders = task.getFoldersCreated()
-        return result.copy(foldersCreated = folders)
+
+        // 记录历史会话
+        val session = OrganizeSession(
+            timestamp = System.currentTimeMillis(),
+            folderCount = folders,
+            appCount = result.stepsExecuted,
+            launcher = detectedLauncherPkg
+        )
+        historyManager.append(session)
+
+        val message = if (result.success) {
+            "视觉整理完成，共创建 $folders 个文件夹"
+        } else {
+            result.message
+        }
+
+        return StrategyResult(
+            success = result.success,
+            message = message,
+            foldersCreated = folders,
+            appsOrganized = result.stepsExecuted
+        )
     }
 
     fun isServiceEnabled() = instance != null
@@ -532,8 +560,9 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
                 DiagnosticLogger.warn(TAG, "  1. 当前窗口不是桌面 (包名: $rootPkg)")
                 DiagnosticLogger.warn(TAG, "  2. Launcher 使用非标准视图结构")
                 DiagnosticLogger.warn(TAG, "  3. 权限不足 — 请检查无障碍、悬浮窗权限")
-                DiagnosticLogger.info(TAG, "被跳过的可疑节点 (${potentialNodes.size}):")
-                potentialNodes.take(20).forEach { DiagnosticLogger.debug(TAG, it) }
+                val nodes = potentialNodes ?: mutableListOf()
+                DiagnosticLogger.info(TAG, "被跳过的可疑节点 (${nodes.size}):")
+                nodes.take(20).forEach { DiagnosticLogger.debug(TAG, it) }
             }
         }
 

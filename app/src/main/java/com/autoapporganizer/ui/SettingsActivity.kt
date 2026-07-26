@@ -1,6 +1,7 @@
 package com.autoapporganizer.ui
 
 import android.os.Bundle
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -11,7 +12,7 @@ import com.autoapporganizer.util.HistoryManager
 import com.autoapporganizer.util.PrefsManager
 
 /**
- * 设置页 —— 分类阈值、不常用阈值、自动回桌面、数据清理。
+ * 设置页 —— 整理模式、分类阈值、不常用阈值、自动回桌面、数据清理。
  */
 class SettingsActivity : AppCompatActivity() {
 
@@ -19,6 +20,16 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var prefs: PrefsManager
     private lateinit var historyManager: HistoryManager
     private lateinit var backupManager: BackupManager
+
+    /** Strategy values corresponding to the spinner */
+    private val strategyValues = listOf("hybrid", "vision", "legacy")
+    private val strategyLabels by lazy {
+        listOf(
+            getString(R.string.settings_strategy_hybrid),
+            getString(R.string.settings_strategy_vision),
+            getString(R.string.settings_strategy_legacy)
+        )
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,9 +42,27 @@ class SettingsActivity : AppCompatActivity() {
 
         binding.btnBack.setOnClickListener { finish() }
 
+        setupStrategySpinner()
         setupSteppers()
         setupSwitch()
         setupDataActions()
+    }
+
+    private fun setupStrategySpinner() {
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, strategyLabels)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerStrategy.adapter = adapter
+
+        val currentIdx = strategyValues.indexOf(prefs.organizeStrategy).coerceAtLeast(0)
+        binding.spinnerStrategy.setSelection(currentIdx)
+
+        binding.spinnerStrategy.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                prefs.organizeStrategy = strategyValues.getOrElse(position) { "hybrid" }
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
     }
 
     private fun setupSteppers() {

@@ -1,21 +1,14 @@
 package com.autoapporganizer.core.perception
 
 import android.graphics.Rect
+import com.autoapporganizer.testutil.TestHelpers.mockRect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 /**
  * Unit tests for [PerceptionFusion].
- *
- * Robolectric is used only to provide the Android [Rect] class on the JVM;
- * the fusion logic itself is pure Kotlin.
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28])
 class PerceptionFusionTest {
 
     private fun element(
@@ -40,7 +33,7 @@ class PerceptionFusionTest {
 
     @Test
     fun `unmatched accessibility nodes are kept as accessibility`() {
-        val a11y = listOf(element("设置", Rect(0, 0, 100, 100)))
+        val a11y = listOf(element("设置", mockRect(0, 0, 100, 100)))
         val result = PerceptionFusion.merge(emptyList(), a11y)
         assertEquals(1, result.size)
         assertEquals(ScreenElement.Source.ACCESSIBILITY, result[0].source)
@@ -52,7 +45,7 @@ class PerceptionFusionTest {
         val vision = listOf(
             element(
                 "Chrome",
-                Rect(200, 200, 300, 300),
+                mockRect(200, 200, 300, 300),
                 source = ScreenElement.Source.VISION,
                 confidence = 0.85f
             )
@@ -68,7 +61,7 @@ class PerceptionFusionTest {
         val vision = listOf(
             element(
                 "Chrome",
-                Rect(110, 110, 210, 210),
+                mockRect(110, 110, 210, 210),
                 source = ScreenElement.Source.VISION,
                 confidence = 0.8f,
                 id = "v1"
@@ -77,7 +70,7 @@ class PerceptionFusionTest {
         val a11y = listOf(
             element(
                 "Chrome",
-                Rect(100, 100, 200, 200),
+                mockRect(100, 100, 200, 200),
                 source = ScreenElement.Source.ACCESSIBILITY,
                 confidence = 1f,
                 id = "a1"
@@ -90,7 +83,10 @@ class PerceptionFusionTest {
         val fused = result[0]
         assertEquals(ScreenElement.Source.FUSED, fused.source)
         // Accessibility bounds are preferred.
-        assertEquals(Rect(100, 100, 200, 200), fused.bounds)
+        assertEquals(100, fused.bounds.left)
+        assertEquals(100, fused.bounds.top)
+        assertEquals(200, fused.bounds.right)
+        assertEquals(200, fused.bounds.bottom)
         // Combined confidence should be higher than either source alone.
         assertEquals(1f - (1f - 0.8f) * (1f - 1f), fused.confidence, 0.001f)
     }
@@ -100,7 +96,7 @@ class PerceptionFusionTest {
         val vision = listOf(
             element(
                 "Chrome",
-                Rect(500, 500, 600, 600),
+                mockRect(500, 500, 600, 600),
                 source = ScreenElement.Source.VISION,
                 confidence = 0.9f
             )
@@ -108,7 +104,7 @@ class PerceptionFusionTest {
         val a11y = listOf(
             element(
                 "Settings",
-                Rect(100, 100, 200, 200),
+                mockRect(100, 100, 200, 200),
                 source = ScreenElement.Source.ACCESSIBILITY
             )
         )
@@ -125,7 +121,7 @@ class PerceptionFusionTest {
         val vision = listOf(
             element(
                 "Chrome",
-                Rect(110, 110, 210, 210),
+                mockRect(110, 110, 210, 210),
                 source = ScreenElement.Source.VISION,
                 confidence = 0.8f
             )
@@ -133,7 +129,7 @@ class PerceptionFusionTest {
         val a11y = listOf(
             element(
                 "Google Chrome",
-                Rect(100, 100, 200, 200),
+                mockRect(100, 100, 200, 200),
                 source = ScreenElement.Source.ACCESSIBILITY
             )
         )
@@ -147,7 +143,7 @@ class PerceptionFusionTest {
         val vision = listOf(
             element(
                 "Browser",
-                Rect(110, 110, 210, 210),
+                mockRect(110, 110, 210, 210),
                 source = ScreenElement.Source.VISION,
                 confidence = 0.8f
             )
@@ -155,7 +151,7 @@ class PerceptionFusionTest {
         val a11y = listOf(
             element(
                 "Chrome",
-                Rect(100, 100, 200, 200),
+                mockRect(100, 100, 200, 200),
                 source = ScreenElement.Source.ACCESSIBILITY
             )
         )
@@ -169,22 +165,22 @@ class PerceptionFusionTest {
         val vision = listOf(
             element(
                 "A",
-                Rect(105, 105, 195, 195),
+                mockRect(105, 105, 195, 195),
                 source = ScreenElement.Source.VISION,
                 confidence = 0.9f,
                 id = "vA"
             ),
             element(
                 "B",
-                Rect(305, 305, 395, 395),
+                mockRect(305, 305, 395, 395),
                 source = ScreenElement.Source.VISION,
                 confidence = 0.9f,
                 id = "vB"
             )
         )
         val a11y = listOf(
-            element("A", Rect(100, 100, 200, 200), id = "aA"),
-            element("B", Rect(300, 300, 400, 400), id = "aB")
+            element("A", mockRect(100, 100, 200, 200), id = "aA"),
+            element("B", mockRect(300, 300, 400, 400), id = "aB")
         )
 
         val result = PerceptionFusion.merge(vision, a11y)

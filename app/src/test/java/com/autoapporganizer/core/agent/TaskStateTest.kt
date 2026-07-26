@@ -31,6 +31,7 @@ class TaskStateTest {
         assertEquals(0, s.itemsOrganized)
         assertTrue(s.errors.isEmpty())
         assertTrue(s.context.isEmpty())
+        assertFalse(s.retryHint)
     }
 
     @Test
@@ -95,6 +96,20 @@ class TaskStateTest {
         val a = TaskState(step = 1)
         val b = TaskState(step = 2)
         assertNotEquals(a, b)
+    }
+
+    @Test
+    fun `retryHint_is_false_by_default`() {
+        val s = TaskState()
+        assertFalse(s.retryHint)
+    }
+
+    @Test
+    fun `retryHint_can_be_set_via_copy`() {
+        val s = TaskState()
+        val withRetry = s.copy(retryHint = true)
+        assertTrue(withRetry.retryHint)
+        assertFalse(s.retryHint) // original unchanged
     }
 
     /**

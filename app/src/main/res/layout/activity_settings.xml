@@ -82,6 +82,47 @@
                 android:showDividers="middle"
                 android:dividerPadding="0dp">
 
+                <!-- Organize mode selector -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="18dp">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/settings_organize_mode"
+                            android:textColor="@color/text_primary"
+                            android:textSize="15sp"
+                            android:fontFamily="sans-serif-medium" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/settings_organize_mode_desc"
+                            android:textColor="@color/text_tertiary"
+                            android:textSize="12sp"
+                            android:fontFamily="sans-serif"
+                            android:layout_marginTop="2dp" />
+                    </LinearLayout>
+
+                    <Spinner
+                        android:id="@+id/spinnerStrategy"
+                        android:layout_width="wrap_content"
+                        android:layout_height="40dp"
+                        android:background="@drawable/bg_btn_outline"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp" />
+                </LinearLayout>
+
                 <!-- Min folder size -->
                 <LinearLayout
                     android:layout_width="match_parent"

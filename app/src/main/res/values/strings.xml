@@ -77,6 +77,8 @@
     <!-- ===== Settings ===== -->
     <string name="settings_title">设置</string>
     <string name="settings_general">通用</string>
+    <string name="settings_organize_mode">整理模式</string>
+    <string name="settings_organize_mode_desc">选择桌面整理策略</string>
     <string name="settings_pref_min_folder_size">每个文件夹最少图标数</string>
     <string name="settings_pref_min_folder_size_desc">同类应用达到此数量才创建文件夹</string>
     <string name="settings_pref_rarely_used">不常用阈值（分钟）</string>
@@ -84,6 +86,9 @@
     <string name="settings_pref_auto_home">整理前自动返回桌面</string>
     <string name="settings_pref_auto_home_desc">关闭后需手动回到桌面</string>
     <string name="settings_data">数据</string>
+    <string name="settings_strategy_hybrid">混合增强（推荐）</string>
+    <string name="settings_strategy_vision">视觉 AI</string>
+    <string name="settings_strategy_legacy">传统无障碍</string>
     <string name="settings_pref_clear_history">清空历史记录</string>
     <string name="settings_pref_clear_history_desc">删除所有整理记录</string>
     <string name="settings_pref_clear_backup">删除桌面备份</string>

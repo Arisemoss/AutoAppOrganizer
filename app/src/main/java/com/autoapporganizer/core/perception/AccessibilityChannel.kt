@@ -2,7 +2,9 @@ package com.autoapporganizer.core.perception
 
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
+import android.graphics.ColorSpace
 import android.graphics.Rect
+import android.hardware.HardwareBuffer
 import android.os.Build
 import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
@@ -142,20 +144,25 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
                         ContextCompat.getMainExecutor(service),
                         object : AccessibilityService.TakeScreenshotCallback {
                             override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                                val bitmap = result.bitmap
-                                DiagnosticLogger.debug(
-                                    TAG,
-                                    "Screenshot captured: ${bitmap.width}x${bitmap.height}"
-                                )
+                                val bitmap = try {
+                                    val hwBuffer = result.hardwareBuffer
+                                    val colorSpace = result.colorSpace
+                                    Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                                } catch (e: Exception) {
+                                    DiagnosticLogger.warn(TAG, "Failed to wrap hardware buffer: ${e.message}")
+                                    null
+                                }
+                                if (bitmap != null) {
+                                    DiagnosticLogger.debug(
+                                        TAG,
+                                        "Screenshot captured: ${bitmap.width}x${bitmap.height}"
+                                    )
+                                }
                                 if (cont.isActive) cont.resume(bitmap)
                             }
 
                             override fun onFailure(errorCode: Int) {
-                                DiagnosticLogger.error(
-                                    TAG,
-                                    "takeScreenshot onFailure errorCode=$errorCode",
-                                    null
-                                )
+                                DiagnosticLogger.error(TAG, "takeScreenshot onFailure errorCode=$errorCode")
                                 if (cont.isActive) cont.resume(null)
                             }
                         }

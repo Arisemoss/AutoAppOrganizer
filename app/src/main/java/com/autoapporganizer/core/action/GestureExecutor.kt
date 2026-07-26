@@ -4,8 +4,10 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.ColorSpace
 import android.graphics.Path
 import android.graphics.Rect
+import android.hardware.HardwareBuffer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -35,6 +37,9 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
         private const val DEFAULT_SWIPE_MS = 300L
         private const val SETTLE_MS = 120L
         private const val INVALID = -1
+
+        /** Timeout for gesture dispatch (ms) — prevents indefinite hangs. */
+        const val GESTURE_TIMEOUT_MS = 5_000L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -235,24 +240,29 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
     private suspend fun dispatchGesture(
         stroke: GestureDescription.StrokeDescription,
         label: String
-    ): Boolean = suspendCancellableCoroutine { cont ->
-        val builder = GestureDescription.Builder().addStroke(stroke)
-        val dispatched = service.dispatchGesture(builder.build(), object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                DiagnosticLogger.debug(TAG, "Gesture completed: $label")
-                if (cont.isActive) cont.resume(true)
-            }
+    ): Boolean = kotlinx.coroutines.withTimeoutOrNull(GESTURE_TIMEOUT_MS) {
+        suspendCancellableCoroutine { cont ->
+            val builder = GestureDescription.Builder().addStroke(stroke)
+            val dispatched = service.dispatchGesture(builder.build(), object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    DiagnosticLogger.debug(TAG, "Gesture completed: $label")
+                    if (cont.isActive) cont.resume(true)
+                }
 
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                DiagnosticLogger.warn(TAG, "Gesture cancelled: $label")
-                if (cont.isActive) cont.resume(false)
-            }
-        }, mainHandler)
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    DiagnosticLogger.warn(TAG, "Gesture cancelled: $label")
+                    if (cont.isActive) cont.resume(false)
+                }
+            }, mainHandler)
 
-        if (!dispatched) {
-            DiagnosticLogger.error(TAG, "dispatchGesture rejected immediately: $label")
-            cont.resume(false)
+            if (!dispatched) {
+                DiagnosticLogger.error(TAG, "dispatchGesture rejected immediately: $label")
+                cont.resume(false)
+            }
         }
+    } ?: run {
+        DiagnosticLogger.error(TAG, "Gesture timed out after ${GESTURE_TIMEOUT_MS}ms: $label")
+        false
     }
 
     /**
@@ -272,15 +282,25 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
             service.display?.displayId ?: 0
         } else 0
         return suspendCancellableCoroutine { cont ->
-            service.takeScreenshot(displayId, service.mainExecutor) { screenshot ->
-                val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
-                    DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
-                    null
-                } else {
-                    screenshot.bitmap
+            val callback = object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                    val bitmap = try {
+                        val hwBuffer = result.hardwareBuffer
+                        val colorSpace = result.colorSpace
+                        Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                    } catch (e: Exception) {
+                        DiagnosticLogger.warn(TAG, "Failed to wrap hardware buffer: ${e.message}")
+                        null
+                    }
+                    if (cont.isActive) cont.resume(bitmap)
                 }
-                if (cont.isActive) cont.resume(bitmap)
+
+                override fun onFailure(errorCode: Int) {
+                    DiagnosticLogger.warn(TAG, "Screenshot failed with errorCode=$errorCode")
+                    if (cont.isActive) cont.resume(null)
+                }
             }
+            service.takeScreenshot(displayId, service.mainExecutor, callback)
         }
     }
 }

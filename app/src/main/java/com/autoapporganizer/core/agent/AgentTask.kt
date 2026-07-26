@@ -22,7 +22,14 @@ data class TaskState(
     val step: Int = 0,
     val itemsOrganized: Int = 0,
     val errors: List<String> = emptyList(),
-    val context: Map<String, Any> = emptyMap()
+    val context: Map<String, Any> = emptyMap(),
+    /**
+     * When `true`, the runner will retry the failed action (up to a limit)
+     * instead of treating it as a terminal failure. Tasks set this via
+     * [AgentTask.observe] when the failure is transient (e.g. gesture cancelled,
+     * element not found on re-scan).
+     */
+    val retryHint: Boolean = false
 )
 
 /**

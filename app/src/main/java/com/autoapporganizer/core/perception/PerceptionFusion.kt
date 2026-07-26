@@ -95,11 +95,9 @@ object PerceptionFusion {
         val smaller = min(a.width() * a.height(), b.width() * b.height())
         val overlapRatio = if (smaller > 0) overlap.toFloat() / smaller else 0f
 
-        val centerA = android.graphics.Point(a.centerX(), a.centerY())
-        val centerB = android.graphics.Point(b.centerX(), b.centerY())
         val distance = Math.hypot(
-            (centerA.x - centerB.x).toDouble(),
-            (centerA.y - centerB.y).toDouble()
+            (a.exactCenterX() - b.exactCenterX()).toDouble(),
+            (a.exactCenterY() - b.exactCenterY()).toDouble()
         )
         val centerScore = 1f - (distance / CENTER_DISTANCE_PX).coerceIn(0.0, 1.0).toFloat()
 

@@ -2,21 +2,17 @@ package com.autoapporganizer.core.plan
 
 import android.graphics.Rect
 import com.autoapporganizer.core.action.Action
+import com.autoapporganizer.testutil.TestHelpers.mockRect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 /**
  * Unit tests for [VisionPlanner].
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28])
 class VisionPlannerTest {
 
-    private val screenBounds = Rect(0, 0, 1080, 2400)
+    private val screenBounds: Rect = mockRect(0, 0, 1080, 2400)
 
     @Test
     fun `parse simple plan with thought and actions`() {
