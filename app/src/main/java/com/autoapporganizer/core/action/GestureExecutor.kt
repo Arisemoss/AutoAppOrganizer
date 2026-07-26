@@ -275,9 +275,16 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
             service.takeScreenshot(displayId, service.mainExecutor) { screenshot ->
                 val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
                     DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
+                    screenshot?.close()
                     null
                 } else {
-                    screenshot.bitmap
+                    // Create a copy before closing the ScreenshotResult, because
+                    // screenshot.close() releases the underlying HardwareBuffer and
+                    // invalidates the bitmap. Without this, the returned Bitmap becomes
+                    // unusable and the HardwareBuffer leaks.
+                    val copy = screenshot.bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    screenshot.close()
+                    copy
                 }
                 if (cont.isActive) cont.resume(bitmap)
             }

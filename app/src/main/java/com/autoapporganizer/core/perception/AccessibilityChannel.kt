@@ -147,7 +147,14 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
                                     TAG,
                                     "Screenshot captured: ${bitmap.width}x${bitmap.height}"
                                 )
-                                if (cont.isActive) cont.resume(bitmap)
+                                // Create a copy before closing the ScreenshotResult, because
+                                // result.close() releases the underlying HardwareBuffer and
+                                // invalidates the bitmap. Without this, the returned Bitmap
+                                // becomes unusable (reads return zero/scrambled pixels) and
+                                // the HardwareBuffer leaks on each call.
+                                val copy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                result.close()
+                                if (cont.isActive) cont.resume(copy)
                             }
 
                             override fun onFailure(errorCode: Int) {
