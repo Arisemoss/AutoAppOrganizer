@@ -11,6 +11,9 @@ import com.autoapporganizer.util.DiagnosticLogger
  */
 interface VisionChannel {
 
+    /** Whether the underlying vision model is configured and reachable. */
+    fun isAvailable(): Boolean
+
     /**
      * Capture the current screen and run the VLM with [prompt], returning the raw
      * [VisionResult].
@@ -40,6 +43,8 @@ class VisionChannelImpl(
     private val accessibilityChannel: AccessibilityChannel,
     private val vlm: VisionModelService
 ) : VisionChannel {
+
+    override fun isAvailable(): Boolean = vlm.isAvailable
 
     companion object {
         private const val TAG = "VisionChannel"

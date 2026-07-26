@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    AutoAppOrganizer — Warm Editorial Main Screen
+    AutoAppOrganizer — Blue & White Premium Main Screen
     Structure:
       Top bar (title + settings)
       → Hero organize card (gradient + glow)
@@ -155,13 +155,13 @@
                                 android:fontFamily="sans-serif-medium" />
 
                             <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="@string/btn_organize_hint"
-                                android:textColor="#E6FFF7ED"
-                                android:textSize="12sp"
-                                android:fontFamily="sans-serif"
-                                android:layout_marginTop="4dp" />
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/btn_organize_hint"
+                            android:textColor="#E6FFFFFF"
+                            android:textSize="12sp"
+                            android:fontFamily="sans-serif"
+                            android:layout_marginTop="4dp" />
                         </LinearLayout>
 
                         <ImageView
@@ -197,7 +197,7 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="@string/organizing"
-                            android:textColor="#E6FFF7ED"
+                            android:textColor="#E6FFFFFF"
                             android:textSize="12sp"
                             android:fontFamily="sans-serif"
                             android:layout_marginTop="10dp" />
