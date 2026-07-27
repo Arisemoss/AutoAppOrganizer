@@ -147,6 +147,7 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
                                     TAG,
                                     "Screenshot captured: ${bitmap.width}x${bitmap.height}"
                                 )
+                                result.close()
                                 if (cont.isActive) cont.resume(bitmap)
                             }
 

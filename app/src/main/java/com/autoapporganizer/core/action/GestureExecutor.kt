@@ -213,6 +213,8 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
                 root.recycle()
                 ok
             } else {
+                focused?.recycle()
+                root?.recycle()
                 // Fallback: try shell input (requires ADB/root; gracefully degrades).
                 Runtime.getRuntime().exec(arrayOf("input", "text", text.replace(" ", "%s"))).waitFor()
                 true
@@ -275,9 +277,10 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
             service.takeScreenshot(displayId, service.mainExecutor) { screenshot ->
                 val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
                     DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
+                    screenshot?.close()
                     null
                 } else {
-                    screenshot.bitmap
+                    screenshot.bitmap.also { screenshot.close() }
                 }
                 if (cont.isActive) cont.resume(bitmap)
             }

@@ -304,16 +304,16 @@ class CloudVlmService(private val prefs: PrefsManager) : VisionModelService {
                     val label = obj.get("label").asSafeString()
                         .ifEmpty { obj.get("name").asSafeString("unknown") }
                         .ifEmpty { "unknown" }
-                    val x = obj.get("x").asSafeFloat()
-                        .let { if (it == 0f) obj.get("boundsX").asSafeFloat() else it }
-                    val y = obj.get("y").asSafeFloat()
-                        .let { if (it == 0f) obj.get("boundsY").asSafeFloat() else it }
-                    val width = obj.get("width").asSafeFloat()
-                        .let { if (it == 0f) obj.get("w").asSafeFloat() else it }
-                    val height = obj.get("height").asSafeFloat()
-                        .let { if (it == 0f) obj.get("h").asSafeFloat() else it }
-                    val confidence = obj.get("confidence").asSafeFloat(1f)
-                        .let { if (it == 0f) obj.get("score").asSafeFloat(1f) else it }
+                    val x = obj.get("x").asSafeFloatOrNull()
+                        ?: obj.get("boundsX").asSafeFloat()
+                    val y = obj.get("y").asSafeFloatOrNull()
+                        ?: obj.get("boundsY").asSafeFloat()
+                    val width = obj.get("width").asSafeFloatOrNull()
+                        ?: obj.get("w").asSafeFloat()
+                    val height = obj.get("height").asSafeFloatOrNull()
+                        ?: obj.get("h").asSafeFloat()
+                    val confidence = obj.get("confidence").asSafeFloatOrNull()
+                        ?: obj.get("score").asSafeFloat(1f)
                     items.add(VisionDetectedItem(label, x, y, width, height, confidence))
                 } catch (e: Exception) {
                     DiagnosticLogger.warn(TAG, "Skipping malformed item: $element")
@@ -344,6 +344,17 @@ class CloudVlmService(private val prefs: PrefsManager) : VisionModelService {
             if (primitive.isNumber) primitive.asFloat else primitive.asString.toFloatOrNull() ?: default
         } catch (e: Exception) {
             default
+        }
+    }
+
+    /** Returns null when the element is absent or unparseable, instead of using 0f as default. */
+    private fun JsonElement?.asSafeFloatOrNull(): Float? {
+        if (this == null || isJsonNull) return null
+        val primitive = this as? JsonPrimitive ?: return null
+        return try {
+            if (primitive.isNumber) primitive.asFloat else primitive.asString.toFloatOrNull()
+        } catch (e: Exception) {
+            null
         }
     }
 }
