@@ -125,6 +125,15 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
             }
             if (child != null) {
                 traverse(child, out)
+                // AccessibilityNodeInfo objects obtained via getChild() are system resources
+                // backed by binder proxies. Failing to recycle them leaks these proxies;
+                // repeated calls (e.g. every ReAct iteration) accumulate until the system
+                // kills the accessibility service with TransactionTooLargeException.
+                try {
+                    child.recycle()
+                } catch (e: Exception) {
+                    DiagnosticLogger.warn(TAG, "Failed to recycle child node: ${e.message}")
+                }
             }
         }
     }

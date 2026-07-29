@@ -123,10 +123,72 @@ class LocalVlmService(private val prefs: PrefsManager) : VisionModelService {
             if (content.isEmpty()) {
                 return VisionResult.Error("Empty content in response")
             }
-            VisionResult.Success(content, rawResponse = response)
+            val items = parseDetectedItems(content)
+            VisionResult.Success(items, response)
         } catch (e: Exception) {
             DiagnosticLogger.error(TAG, "parseResponse failed: ${e.message}")
             VisionResult.Error("Parse error: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Extract the JSON array of detected items embedded in the model's free-text answer.
+     * Mirrors [CloudVlmService.parseDetectedItems] for the local provider.
+     */
+    private fun parseDetectedItems(text: String): List<VisionDetectedItem> {
+        val items = mutableListOf<VisionDetectedItem>()
+        try {
+            val start = text.indexOf('[')
+            val end = text.lastIndexOf(']')
+            if (start < 0 || end < 0 || end <= start) {
+                DiagnosticLogger.warn(TAG, "No JSON array found in VLM text")
+                return items
+            }
+            val json = text.substring(start, end + 1)
+            val array = JsonParser.parseString(json).asJsonArray
+
+            for (element in array) {
+                try {
+                    val obj = element.asJsonObject
+                    val label = obj.get("label").asSafeString()
+                        .ifEmpty { obj.get("name").asSafeString("unknown") }
+                        .ifEmpty { "unknown" }
+                    val x = obj.get("x").asSafeFloat()
+                        .let { if (it == 0f) obj.get("boundsX").asSafeFloat() else it }
+                    val y = obj.get("y").asSafeFloat()
+                        .let { if (it == 0f) obj.get("boundsY").asSafeFloat() else it }
+                    val width = obj.get("width").asSafeFloat()
+                        .let { if (it == 0f) obj.get("w").asSafeFloat() else it }
+                    val height = obj.get("height").asSafeFloat()
+                        .let { if (it == 0f) obj.get("h").asSafeFloat() else it }
+                    val confidence = obj.get("confidence").asSafeFloat(1f)
+                        .let { if (it == 0f) obj.get("score").asSafeFloat(1f) else it }
+                    items.add(VisionDetectedItem(label, x, y, width, height, confidence))
+                } catch (e: Exception) {
+                    DiagnosticLogger.warn(TAG, "Skipping malformed item: $element")
+                }
+            }
+        } catch (e: Exception) {
+            DiagnosticLogger.error(TAG, "parseDetectedItems failed: ${e.message}")
+        }
+        return items
+    }
+
+    private fun com.google.gson.JsonElement?.asSafeString(default: String = ""): String {
+        val primitive = this as? com.google.gson.JsonPrimitive ?: return default
+        return try {
+            primitive.asString
+        } catch (e: Exception) {
+            default
+        }
+    }
+
+    private fun com.google.gson.JsonElement?.asSafeFloat(default: Float = 0f): Float {
+        val primitive = this as? com.google.gson.JsonPrimitive ?: return default
+        return try {
+            if (primitive.isNumber) primitive.asFloat else primitive.asString.toFloatOrNull() ?: default
+        } catch (e: Exception) {
+            default
         }
     }
 }
