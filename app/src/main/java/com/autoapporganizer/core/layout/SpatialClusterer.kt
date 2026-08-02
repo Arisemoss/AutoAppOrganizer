@@ -1,9 +1,7 @@
 package com.autoapporganizer.core.layout
 
 import android.graphics.PointF
-import android.graphics.Rect
 import com.autoapporganizer.core.perception.ScreenElement
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -15,12 +13,6 @@ import kotlin.math.sqrt
  * 3. 按空间临近度排序拖拽顺序，减少拖拽距离
  */
 object SpatialClusterer {
-
-    /**
-     * 网格容差（像素）：同一行/列的图标中心坐标偏差在此范围内视为对齐。
-     * Android 桌面图标网格通常间距为 100-180px，容差设为 60px 足够鲁棒。
-     */
-    private const val GRID_TOLERANCE_PX = 60
 
     /**
      * 对一组图标进行空间聚类，返回按空间临近度排序的图标列表。
@@ -142,20 +134,6 @@ object SpatialClusterer {
         }
 
         return steps
-    }
-
-    /**
-     * 判断两个图标是否在同一行（基于网格对齐）。
-     */
-    fun isSameRow(y1: Float, y2: Float): Boolean {
-        return abs(y1 - y2) <= GRID_TOLERANCE_PX
-    }
-
-    /**
-     * 判断两个图标是否在同一列（基于网格对齐）。
-     */
-    fun isSameColumn(x1: Float, x2: Float): Boolean {
-        return abs(x1 - x2) <= GRID_TOLERANCE_PX
     }
 
     /**

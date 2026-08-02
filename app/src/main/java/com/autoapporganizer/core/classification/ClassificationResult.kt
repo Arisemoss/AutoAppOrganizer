@@ -1,5 +1,8 @@
 package com.autoapporganizer.core.classification
 
+/** 分类置信度阈值：低于此值的分类结果回退到关键词匹配或缓存 */
+const val CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.5f
+
 /**
  * AI 驱动的分类结果，包含置信度评分和推理过程。
  *
