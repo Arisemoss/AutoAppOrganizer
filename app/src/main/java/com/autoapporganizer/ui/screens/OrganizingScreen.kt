@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableTransitionState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -112,7 +113,7 @@ fun OrganizingScreen(
                 contentPadding = PaddingValues(horizontal = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                itemsIndexed(categories, key = { i, _ -> i }) { index, (category, count) ->
+                itemsIndexed(categories, key = { _, pair -> pair.first.name }) { index, (category, count) ->
                     CategoryPreviewCard(category = category, count = count, index = index)
                 }
             }
@@ -128,7 +129,7 @@ private fun CategoryPreviewCard(
     index: Int
 ) {
     val visibleState = remember { MutableTransitionState(false) }
-    visibleState.targetState = true
+    LaunchedEffect(Unit) { visibleState.targetState = true }
     AnimatedVisibility(
         visibleState = visibleState,
         enter = slideInHorizontally(

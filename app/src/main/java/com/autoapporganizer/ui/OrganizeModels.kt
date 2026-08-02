@@ -33,5 +33,5 @@ data class BackupEntry(
 ) {
     /** 备份体积估算（仅展示用）。 */
     val sizeLabel: String
-        get() = "~" + String.format("%.1f KB", (appCount * 0.2).coerceAtLeast(0.1))
+        get() = "~" + String.format(java.util.Locale.US, "%.1f KB", (appCount * 0.2).coerceAtLeast(0.1))
 }

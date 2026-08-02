@@ -29,7 +29,9 @@ import com.autoapporganizer.ui.components.OrbitVisualizer
 import com.autoapporganizer.ui.components.PrimaryGradientButton
 import com.autoapporganizer.ui.components.SecondaryOutlineButton
 import com.autoapporganizer.ui.components.StatusChip
+import com.autoapporganizer.ui.theme.AuroraCyan
 import com.autoapporganizer.ui.theme.LocalIsDark
+import com.autoapporganizer.ui.theme.SkyCyan
 import com.autoapporganizer.ui.theme.TextSecondaryDark
 import com.autoapporganizer.ui.theme.TextSecondaryLight
 import com.autoapporganizer.ui.theme.primaryLinearGradient
@@ -42,6 +44,7 @@ import java.util.Locale
  *
  * 顶部日期 + 标题 + 副标题 + 渐变分割线；中部圆形可视化；底部悬浮毛玻璃操作卡片。
  */
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun HomeScreen(
     pendingAppCount: Int,
@@ -106,9 +109,12 @@ fun HomeScreen(
             // ── 底部悬浮操作卡片 ──
             GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 24) {
                 Column(modifier = Modifier.padding(24.dp)) {
-                    // 快捷状态标签
+                    // 快捷状态标签 —— 两个 chip 都带左侧色点
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        StatusChip(text = "上次整理：$lastOrganizeLabel")
+                        StatusChip(
+                            text = "上次整理：$lastOrganizeLabel",
+                            leadingColor = if (isDark) AuroraCyan else SkyCyan
+                        )
                         StatusChip(
                             text = "备份：$backupLabel",
                             leadingColor = if (isDark) Color(0xFF22C55E) else Color(0xFF16A34A)
@@ -126,7 +132,7 @@ fun HomeScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // 次级按钮行
+                    // 次级按钮行（规格：查看备份 + 分类设置 等宽并排）
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         SecondaryOutlineButton(
                             text = "查看备份",
@@ -139,26 +145,11 @@ fun HomeScreen(
                             onClick = onOpenSettings
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // 进阶操作行（保留视觉整理 / 诊断入口）
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SecondaryOutlineButton(
-                            text = "视觉整理",
-                            modifier = Modifier.weight(1f),
-                            onClick = onVisionOrganize
-                        )
-                        SecondaryOutlineButton(
-                            text = "诊断桌面",
-                            modifier = Modifier.weight(1f),
-                            onClick = onDiagnose
-                        )
-                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            // L6: 底部边距 24dp（规格要求卡片 margin 24dp）
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
