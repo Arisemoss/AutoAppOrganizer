@@ -272,15 +272,24 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
             service.display?.displayId ?: 0
         } else 0
         return suspendCancellableCoroutine { cont ->
-            service.takeScreenshot(displayId, service.mainExecutor) { screenshot ->
-                val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
-                    DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
-                    null
-                } else {
-                    screenshot.bitmap
+            service.takeScreenshot(
+                displayId,
+                service.mainExecutor,
+                object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                        val hardwareBuffer = result.hardwareBuffer
+                        val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, result.colorSpace)
+                        hardwareBuffer.close()
+                        DiagnosticLogger.debug(TAG, "Screenshot captured: ${bitmap?.width ?: 0}x${bitmap?.height ?: 0}")
+                        if (cont.isActive) cont.resume(bitmap)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        DiagnosticLogger.error(TAG, "takeScreenshot onFailure errorCode=$errorCode")
+                        if (cont.isActive) cont.resume(null)
+                    }
                 }
-                if (cont.isActive) cont.resume(bitmap)
-            }
+            )
         }
     }
 }

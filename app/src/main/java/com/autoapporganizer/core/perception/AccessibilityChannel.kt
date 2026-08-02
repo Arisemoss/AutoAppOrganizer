@@ -142,10 +142,12 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
                         ContextCompat.getMainExecutor(service),
                         object : AccessibilityService.TakeScreenshotCallback {
                             override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                                val bitmap = result.bitmap
+                                val hardwareBuffer = result.hardwareBuffer
+                                val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, result.colorSpace)
+                                hardwareBuffer.close()
                                 DiagnosticLogger.debug(
                                     TAG,
-                                    "Screenshot captured: ${bitmap.width}x${bitmap.height}"
+                                    "Screenshot captured: ${bitmap?.width ?: 0}x${bitmap?.height ?: 0}"
                                 )
                                 if (cont.isActive) cont.resume(bitmap)
                             }
@@ -153,8 +155,7 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
                             override fun onFailure(errorCode: Int) {
                                 DiagnosticLogger.error(
                                     TAG,
-                                    "takeScreenshot onFailure errorCode=$errorCode",
-                                    null
+                                    "takeScreenshot onFailure errorCode=$errorCode"
                                 )
                                 if (cont.isActive) cont.resume(null)
                             }

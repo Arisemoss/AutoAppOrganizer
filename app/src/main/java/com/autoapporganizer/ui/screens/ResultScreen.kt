@@ -1,7 +1,7 @@
 package com.autoapporganizer.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.MutableTransitionState
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring

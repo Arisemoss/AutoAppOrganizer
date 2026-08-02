@@ -127,7 +127,7 @@ $iconList
 
             when (result) {
                 is VisionResult.Success -> {
-                    parseClassificationResponse(result.text)
+                    parseClassificationResponse(result.rawResponse)
                 }
                 is VisionResult.Error -> {
                     DiagnosticLogger.warn(TAG, "VLM classification failed: ${result.message}")

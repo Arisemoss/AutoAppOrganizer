@@ -55,7 +55,7 @@ val WarningAmber = Color(0xFFF59E0B)
 // ════════════════════════════════════════════════════════
 
 /** 主渐变（左→右）。深色用极光三色，浅色用柔色三色。 */
-fun primaryLinearGradient(isDark: Boolean): Brush.LinearGradient =
+fun primaryLinearGradient(isDark: Boolean): Brush =
     Brush.linearGradient(
         colors = if (isDark) {
             listOf(AuroraCyan, ElectricPurple, NeonPink)
@@ -76,11 +76,11 @@ fun flowingGradientColors(isDark: Boolean): List<Color> = if (isDark) {
 }
 
 /** 琥珀渐变（警告 / 备份相关）。 */
-fun amberLinearGradient(): Brush.LinearGradient =
+fun amberLinearGradient(): Brush =
     Brush.linearGradient(colors = listOf(AmberGold, CoralOrange))
 
 /** 圆环可视化中心的径向辉光（主渐变 20% 透明度）。 */
-fun orbitCenterGlow(isDark: Boolean): Brush.RadialGradient {
+fun orbitCenterGlow(isDark: Boolean): Brush {
     val base = if (isDark) AuroraCyan else SkyCyan
     return Brush.radialGradient(
         colors = listOf(base.copy(alpha = 0.20f), Color.Transparent)

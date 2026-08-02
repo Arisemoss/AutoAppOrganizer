@@ -26,7 +26,11 @@ import com.autoapporganizer.ui.theme.BorderSubtleDark
 import com.autoapporganizer.ui.theme.BorderSubtleLight
 import com.autoapporganizer.ui.theme.DarkSurface
 import com.autoapporganizer.ui.theme.LightSurface
+import com.autoapporganizer.ui.theme.DarkBgEnd
+import com.autoapporganizer.ui.theme.DarkBgStart
 import com.autoapporganizer.ui.theme.LocalIsDark
+import com.autoapporganizer.ui.theme.LightBgEnd
+import com.autoapporganizer.ui.theme.LightBgStart
 import com.autoapporganizer.ui.theme.primaryLinearGradient
 
 /**
