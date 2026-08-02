@@ -49,13 +49,30 @@ class VisionChannelImpl(
     companion object {
         private const val TAG = "VisionChannel"
 
-        private const val ICON_SCAN_PROMPT =
-            "Identify all app icons visible on the home screen / desktop. " +
-                "Return ONLY a JSON array (no markdown, no prose) where each object has " +
-                "the keys: label (string), x (number), y (number), width (number), " +
-                "height (number), confidence (number 0..1). " +
-                "x and y are the top-left absolute pixel coordinates of the icon; " +
-                "width and height are the icon size in pixels."
+        /**
+         * Builds the icon-scan prompt for a screen of the given size.
+         *
+         * The screen dimensions are injected so the model reports coordinates in the
+         * correct pixel space (a model that does not know the image resolution tends to
+         * hallucinate or mis-scale boxes). The prompt also demands strict JSON, unique
+         * detections, and explicitly excludes folders/widgets/chrome so the downstream
+         * [DetectionFilter] has fewer false positives to remove.
+         */
+        private fun buildIconScanPrompt(screenWidth: Int, screenHeight: Int): String =
+            "Identify all app icons visible on this Android home screen. " +
+                "The screenshot is ${screenWidth}x${screenHeight} pixels. " +
+                "Return ONLY a JSON array - no markdown, no code fence, no prose, nothing else. " +
+                "Each array element must be an object with exactly these keys: " +
+                "\"label\" (string: the app name shown under the icon), " +
+                "\"x\" (number), \"y\" (number), \"width\" (number), \"height\" (number), " +
+                "\"confidence\" (number 0..1). " +
+                "x and y are the ABSOLUTE pixel coordinates of the icon's top-left corner " +
+                "in the ${screenWidth}x${screenHeight} screenshot; width and height are the " +
+                "icon's size in pixels. " +
+                "Detect each icon exactly once - do not report any icon twice. " +
+                "Only report app icons: ignore folders, widgets, the dock, the status bar " +
+                "and the wallpaper. " +
+                "If this is not a home screen or no app icons are visible, return []."
     }
 
     override suspend fun analyze(prompt: String): VisionResult {
@@ -77,10 +94,22 @@ class VisionChannelImpl(
             return emptyList()
         }
 
-        return when (val result = analyze(ICON_SCAN_PROMPT)) {
+        // Capture once: the bitmap provides both the image and the screen dimensions
+        // needed to build a resolution-aware prompt.
+        val bitmap = accessibilityChannel.screenshot()
+        if (bitmap == null) {
+            DiagnosticLogger.warn(TAG, "scan: screenshot capture failed")
+            return emptyList()
+        }
+
+        val prompt = buildIconScanPrompt(bitmap.width, bitmap.height)
+        return when (val result = vlm.analyze(bitmap, prompt)) {
             is VisionResult.Success -> {
-                DiagnosticLogger.debug(TAG, "scan: VLM detected ${result.elements.size} item(s)")
-                result.elements.mapIndexed { index, item ->
+                DiagnosticLogger.debug(
+                    TAG,
+                    "scan: VLM detected ${result.elements.size} item(s) on ${bitmap.width}x${bitmap.height}"
+                )
+                val raw = result.elements.mapIndexed { index, item ->
                     val left = item.x.toInt()
                     val top = item.y.toInt()
                     val right = (item.x + item.width).toInt()
@@ -94,6 +123,13 @@ class VisionChannelImpl(
                         packageName = null
                     )
                 }
+                // De-duplicate, reject hallucinations and clamp coordinates.
+                val filtered = DetectionFilter.apply(raw, bitmap.width, bitmap.height)
+                DiagnosticLogger.debug(
+                    TAG,
+                    "scan: ${filtered.size} item(s) after filter (${raw.size - filtered.size} dropped)"
+                )
+                filtered
             }
             is VisionResult.Error -> {
                 DiagnosticLogger.warn(TAG, "scan: VLM error: ${result.message}")

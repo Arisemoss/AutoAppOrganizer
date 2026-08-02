@@ -123,7 +123,9 @@ class LocalVlmService(private val prefs: PrefsManager) : VisionModelService {
             if (content.isEmpty()) {
                 return VisionResult.Error("Empty content in response")
             }
-            VisionResult.Success(content, rawResponse = response)
+            val items = VisionResponseParser.parseDetectedItems(content)
+            DiagnosticLogger.debug(TAG, "Parsed ${items.size} detected items from response")
+            VisionResult.Success(items, rawResponse = response)
         } catch (e: Exception) {
             DiagnosticLogger.error(TAG, "parseResponse failed: ${e.message}")
             VisionResult.Error("Parse error: ${e.message}", e)

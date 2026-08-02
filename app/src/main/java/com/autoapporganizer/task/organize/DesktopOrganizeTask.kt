@@ -270,9 +270,15 @@ class DesktopOrganizeTask(
     // Helpers
     // ──────────────────────────────────────────────
 
-    /** Categorize screen elements using [CategoryMatcher]. */
+    /**
+     * Categorize screen elements using [CategoryMatcher].
+     *
+     * Both the visible label and the system-provided package name are used: the package
+     * name is the strongest evidence (e.g. `com.tencent.mm` unambiguously identifies
+     * WeChat even when the label is missing, renamed or OCR-garbled).
+     */
     private fun categorize(elements: List<ScreenElement>): Map<String, List<ScreenElement>> {
-        return elements.groupBy { categoryMatcher.matchCategory(it.label) }
+        return elements.groupBy { categoryMatcher.matchCategory(it.label, it.packageName) }
     }
 
     /**
