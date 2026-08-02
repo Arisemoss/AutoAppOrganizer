@@ -30,9 +30,6 @@ class SemanticClassifier(
     companion object {
         private const val TAG = "SemanticClassifier"
 
-        /** 置信度阈值：低于此值的分类结果标记为不确定，回退到关键词匹配 */
-        const val CONFIDENCE_THRESHOLD = 0.5f
-
         /**
          * 构建分类 prompt 模板。
          *

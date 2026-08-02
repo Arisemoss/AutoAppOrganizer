@@ -61,7 +61,8 @@ class FeedbackCollector {
             )
         }
 
-        keywordFallbackCount = lowConfidenceItems.size + response.uncertain.size
+        // lowConfidenceItems 已包含 categories 中低置信度项 + uncertain 全部项，无需重复加
+        keywordFallbackCount = lowConfidenceItems.size
 
         DiagnosticLogger.info(
             TAG,

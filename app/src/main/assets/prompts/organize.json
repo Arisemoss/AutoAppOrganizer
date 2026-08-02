@@ -7,13 +7,6 @@
     "exampleShot": "Input: a home screen with WeChat and Chrome.\nOutput:\n{\"apps\": [{\"label\": \"WeChat\", \"bounds\": {\"left\": 100, \"top\": 400, \"right\": 220, \"bottom\": 520}}, {\"label\": \"Chrome\", \"bounds\": {\"left\": 300, \"top\": 400, \"right\": 420, \"bottom\": 520}}]}"
   },
   {
-    "id": "classify_icons",
-    "stage": "classify",
-    "name": "语义分类图标",
-    "content": "你是一个 Android 桌面应用分类专家。请根据应用名称和功能语义，将以下桌面图标分配到合适的分类中。\n\n已有分类：{{existingCategories}}\n\n规则：\n1. 优先使用已有分类，只有当应用确实不适合任何已有分类时才创建新分类\n2. 每个分类决策需要给出置信度 (0.0~1.0)，低于 0.5 的标记为 uncertain\n3. 如果某个分类只有 1 个应用，直接归入\"其他\"分类\n4. 不要使用 \"工具\" 作为兜底分类，不确定的归入 \"其他\"\n\n桌面图标列表：\n{{iconList}}\n\n返回严格 JSON（不要 markdown 代码块）：\n{\"thought\": \"整体分类思路\", \"categories\": [{\"category\": \"分类名\", \"isNewCategory\": false, \"apps\": [{\"label\": \"应用名\", \"confidence\": 0.95, \"reasoning\": \"分类理由\"}]}], \"uncertain\": [{\"label\": \"应用名\", \"confidence\": 0.3, \"reasoning\": \"不确定原因\"}]}",
-    "exampleShot": "已有分类：社交、视频、购物、游戏\n图标列表：微信、QQ、抖音、淘宝、王者荣耀\n输出：{\"thought\": \"微信和QQ是社交类，抖音是视频类，淘宝是购物类，王者荣耀是游戏类，分类置信度高\", \"categories\": [{\"category\": \"社交\", \"isNewCategory\": false, \"apps\": [{\"label\": \"微信\", \"confidence\": 0.98, \"reasoning\": \"典型社交应用\"}, {\"label\": \"QQ\", \"confidence\": 0.98, \"reasoning\": \"典型社交应用\"}]}, {\"category\": \"视频\", \"isNewCategory\": false, \"apps\": [{\"label\": \"抖音\", \"confidence\": 0.95, \"reasoning\": \"短视频应用\"}]}, {\"category\": \"购物\", \"isNewCategory\": false, \"apps\": [{\"label\": \"淘宝\", \"confidence\": 0.97, \"reasoning\": \"电商购物应用\"}]}, {\"category\": \"游戏\", \"isNewCategory\": false, \"apps\": [{\"label\": \"王者荣耀\", \"confidence\": 0.99, \"reasoning\": \"手机游戏\"}]}], \"uncertain\": []}"
-  },
-  {
     "id": "plan_next_action",
     "stage": "plan",
     "name": "规划下一步动作",

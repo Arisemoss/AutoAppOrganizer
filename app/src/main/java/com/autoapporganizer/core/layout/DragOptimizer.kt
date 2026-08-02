@@ -67,7 +67,8 @@ object DragOptimizer {
         }
 
         val steps = SpatialClusterer.optimizeDragSequence(elements)
-        val (anchorIdx, _) = SpatialClusterer.findAnchorPair(elements)
+        // 从 DragStep 中提取锚点索引（第一个步骤的 fromIndex 即锚点）
+        val anchorIdx = steps.firstOrNull()?.fromIndex ?: 0
 
         // 按拖拽步骤排序图标
         val orderedIndices = steps.map { it.fromIndex }.distinct()

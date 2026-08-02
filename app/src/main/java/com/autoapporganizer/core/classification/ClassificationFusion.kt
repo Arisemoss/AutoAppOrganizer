@@ -21,21 +21,20 @@ object ClassificationFusion {
 
     private const val TAG = "ClassificationFusion"
 
-    /** 置信度阈值：低于此值回退到关键词匹配 */
-    private const val CONFIDENCE_THRESHOLD = 0.5f
-
     /**
-     * 融合 AI 分类和关键词分类，生成最终分组。
+     * 融合 AI 分类、缓存分类和关键词分类，生成最终分组。
      *
      * @param aiResponse AI 分类响应（可为 null，表示 AI 不可用）
      * @param elements 桌面元素列表
      * @param categoryMatcher 关键词分类器（兜底）
+     * @param cachedCategories 缓存中的分类结果 (label → category)，来自持久化缓存
      * @return 分类名 → 元素列表的映射
      */
     fun fuse(
         aiResponse: ClassificationResponse?,
         elements: List<ScreenElement>,
-        categoryMatcher: CategoryMatcher
+        categoryMatcher: CategoryMatcher,
+        cachedCategories: Map<String, String> = emptyMap()
     ): Map<String, List<ScreenElement>> {
         // 构建 label → ScreenElement 的查找表
         val elementMap = buildElementMap(elements)
@@ -58,7 +57,7 @@ object ClassificationFusion {
         for (catResult in aiResponse.categories) {
             for (app in catResult.apps) {
                 // 跳过低置信度的项，交给关键词处理
-                if (app.confidence < CONFIDENCE_THRESHOLD) {
+                if (app.confidence < CLASSIFICATION_CONFIDENCE_THRESHOLD) {
                     DiagnosticLogger.debug(
                         TAG,
                         "Low confidence: '${app.label}' → ${app.category} (${app.confidence})"
@@ -74,29 +73,29 @@ object ClassificationFusion {
             }
         }
 
-        // 2. 处理 AI 标记为 uncertain 的项 → 用关键词匹配兜底
+        // 2. 处理 AI 标记为 uncertain 的项 → 缓存优先 > 关键词兜底
         for (app in aiResponse.uncertain) {
             if (classifiedLabels.contains(app.label)) continue
             val matched = findElement(app.label, elementMap)
             if (matched != null) {
-                val keywordCategory = categoryMatcher.matchCategory(matched.label)
-                result.getOrPut(keywordCategory) { mutableListOf() }.add(matched)
+                val fallbackCategory = resolveFallbackCategory(matched.label, cachedCategories, categoryMatcher)
+                result.getOrPut(fallbackCategory) { mutableListOf() }.add(matched)
                 classifiedLabels.add(app.label)
                 DiagnosticLogger.debug(
                     TAG,
-                    "Uncertain '${app.label}' → keyword fallback: $keywordCategory"
+                    "Uncertain '${app.label}' → fallback: $fallbackCategory"
                 )
             }
         }
 
-        // 3. AI 未覆盖的图标 → 关键词匹配兜底
+        // 3. AI 未覆盖的图标 → 缓存优先 > 关键词兜底
         val unclassified = elements.filter { el ->
             !classifiedLabels.contains(el.label)
         }
         if (unclassified.isNotEmpty()) {
-            DiagnosticLogger.debug(TAG, "${unclassified.size} unclassified elements, using keyword fallback")
+            DiagnosticLogger.debug(TAG, "${unclassified.size} unclassified elements, using cache/keyword fallback")
             for (el in unclassified) {
-                val category = categoryMatcher.matchCategory(el.label)
+                val category = resolveFallbackCategory(el.label, cachedCategories, categoryMatcher)
                 result.getOrPut(category) { mutableListOf() }.add(el)
             }
         }
@@ -124,6 +123,17 @@ object ClassificationFusion {
             result.getOrPut(category) { mutableListOf() }.add(el)
         }
         return mergeSmallCategories(result)
+    }
+
+    /**
+     * 兜底分类决策：缓存优先，关键词匹配兜底。
+     */
+    private fun resolveFallbackCategory(
+        label: String,
+        cachedCategories: Map<String, String>,
+        categoryMatcher: CategoryMatcher
+    ): String {
+        return cachedCategories[label] ?: categoryMatcher.matchCategory(label)
     }
 
     /**
@@ -155,14 +165,23 @@ object ClassificationFusion {
     /**
      * 构建 label → ScreenElement 的查找表。
      * 使用模糊匹配（子串包含），因为 VLM 返回的标签可能与无障碍节点树的标签不完全一致。
+     * 注意：同标签的多个元素会保留最后一个，这是预期行为（VLM 无法区分同标签元素）。
      */
     private fun buildElementMap(elements: List<ScreenElement>): Map<String, ScreenElement> {
+        val byLabel = elements.groupBy { it.label }
+        val duplicates = byLabel.filter { it.value.size > 1 }
+        if (duplicates.isNotEmpty()) {
+            DiagnosticLogger.warn(
+                TAG,
+                "Duplicate labels detected: ${duplicates.keys.joinToString()}, keeping last of each"
+            )
+        }
         return elements.associateBy { it.label }
     }
 
     /**
      * 根据标签查找对应的 ScreenElement。
-     * 首先尝试精确匹配，失败则尝试模糊匹配。
+     * 首先尝试精确匹配，失败则尝试模糊匹配（要求子串长度 >= 较短标签的 50% 以避免误匹配）。
      */
     private fun findElement(
         label: String,
@@ -174,8 +193,16 @@ object ClassificationFusion {
         // 模糊匹配：VLM 返回的标签可能只是无障碍标签的一部分
         val lowerLabel = label.lowercase()
         for ((key, element) in elementMap) {
-            if (key.lowercase().contains(lowerLabel) || lowerLabel.contains(key.lowercase())) {
-                return element
+            val lowerKey = key.lowercase()
+            val containsKey = lowerKey.contains(lowerLabel)
+            val containsLabel = lowerLabel.contains(lowerKey)
+            if (containsKey || containsLabel) {
+                // 子串长度至少为较短标签的 50%，避免"计算器"与"计算机"误匹配
+                val minLen = minOf(lowerLabel.length, lowerKey.length)
+                val matchLen = if (containsKey) lowerLabel.length else lowerKey.length
+                if (matchLen.toFloat() / minLen >= 0.5f) {
+                    return element
+                }
             }
         }
 

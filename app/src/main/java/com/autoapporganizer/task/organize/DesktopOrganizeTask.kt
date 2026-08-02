@@ -7,10 +7,12 @@ import com.autoapporganizer.core.agent.AgentTask
 import com.autoapporganizer.core.agent.TaskState
 import com.autoapporganizer.core.classification.ClassificationFusion
 import com.autoapporganizer.core.classification.ClassificationResponse
+import com.autoapporganizer.core.classification.CLASSIFICATION_CONFIDENCE_THRESHOLD
 import com.autoapporganizer.core.classification.SemanticClassifier
 import com.autoapporganizer.core.feedback.ClassificationCache
 import com.autoapporganizer.core.feedback.FeedbackCollector
 import com.autoapporganizer.core.layout.DragOptimizer
+import com.autoapporganizer.core.layout.SpatialClusterer
 import com.autoapporganizer.core.model.VisionModelService
 import com.autoapporganizer.core.model.VisionResult
 import com.autoapporganizer.core.perception.AccessibilityChannel
@@ -151,7 +153,7 @@ class DesktopOrganizeTask(
         val elements = categorized[cat].orEmpty()
 
         // 空间优化：选择距离质心最近的图标对作为锚点，减少拖拽距离
-        val (anchorIdx, secondIdx) = com.autoapporganizer.core.layout.SpatialClusterer.findAnchorPair(elements)
+        val (anchorIdx, secondIdx) = SpatialClusterer.findAnchorPair(elements)
         val anchor = elements[anchorIdx]
         val second = elements[secondIdx]
 
@@ -225,7 +227,7 @@ class DesktopOrganizeTask(
                     }
 
                     // 使用空间优化后的锚点对：文件夹创建在 second 图标的位置
-                    val (_, secondIdx) = com.autoapporganizer.core.layout.SpatialClusterer.findAnchorPair(elements)
+                    val (_, secondIdx) = SpatialClusterer.findAnchorPair(elements)
                     val secondElement = elements[secondIdx]
 
                     // The folder should now exist near the second icon. Use the second icon's
@@ -304,12 +306,14 @@ class DesktopOrganizeTask(
     // Helpers
     // ──────────────────────────────────────────────
 
-    /** 使用 AI 语义分类 + 关键词兜底进行图标分类（参考 Operit 的多路信号融合） */
+    /** 使用 AI 语义分类 + 缓存先验 + 关键词兜底进行图标分类（参考 Operit 的多路信号融合） */
     private suspend fun categorizeWithAI(elements: List<ScreenElement>): Map<String, List<ScreenElement>> {
-        // 1. 先查缓存，记录命中情况（参考 Operit 的知识图谱去重机制）
+        // 1. 构建缓存映射 (label → category)，作为兜底分类的先验知识
+        val cachedMap = mutableMapOf<String, String>()
         for (el in elements) {
             val cached = classificationCache.lookup(el.label)
             if (cached != null) {
+                cachedMap[el.label] = cached
                 DiagnosticLogger.debug(TAG, "Cache hit: '${el.label}' → $cached")
             }
         }
@@ -334,7 +338,7 @@ class DesktopOrganizeTask(
 
             // 记录低置信度项
             val lowConfidence = allApps
-                .filter { it.confidence < SemanticClassifier.CONFIDENCE_THRESHOLD }
+                .filter { it.confidence < CLASSIFICATION_CONFIDENCE_THRESHOLD }
             if (lowConfidence.isNotEmpty()) {
                 DiagnosticLogger.warn(
                     TAG,
@@ -349,13 +353,8 @@ class DesktopOrganizeTask(
             )
         }
 
-        // 3. 融合 AI 分类和关键词分类
-        return ClassificationFusion.fuse(aiResponse, elements, categoryMatcher)
-    }
-
-    /** 旧版纯关键词分类（保留作为纯兜底，不再直接调用） */
-    private fun categorize(elements: List<ScreenElement>): Map<String, List<ScreenElement>> {
-        return elements.groupBy { categoryMatcher.matchCategory(it.label) }
+        // 3. 融合 AI 分类、缓存和关键词分类
+        return ClassificationFusion.fuse(aiResponse, elements, categoryMatcher, cachedMap)
     }
 
     /** 获取最近一次分类响应（用于 UI 展示低置信度项） */
