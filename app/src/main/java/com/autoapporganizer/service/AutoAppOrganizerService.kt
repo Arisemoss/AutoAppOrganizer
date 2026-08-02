@@ -17,7 +17,9 @@ import com.autoapporganizer.util.DiagnosticLogger
 import com.autoapporganizer.util.HistoryManager
 import com.autoapporganizer.core.action.GestureExecutor
 import com.autoapporganizer.core.agent.AgentRunner
+import com.autoapporganizer.core.feedback.FeedbackCollector
 import com.autoapporganizer.core.model.CloudVlmService
+import com.autoapporganizer.core.model.VisionModelService
 import com.autoapporganizer.core.model.VlmServiceFactory
 import com.autoapporganizer.core.perception.AccessibilityChannelImpl
 import com.autoapporganizer.core.perception.VisionChannelImpl
@@ -394,7 +396,7 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
         val perceptionChannel = AccessibilityChannelImpl(this@AutoAppOrganizerService)
         val visionChannel = VisionChannelImpl(perceptionChannel, vlm)
         val runner = AgentRunner(gestureExecutor, perceptionChannel, visionChannel)
-        val task = DesktopOrganizeTask(perceptionChannel, visionChannel, this@AutoAppOrganizerService, prefs)
+        val task = DesktopOrganizeTask(perceptionChannel, visionChannel, this@AutoAppOrganizerService, prefs, vlm)
 
         // 整理前返回桌面
         if (prefs.autoReturnHome) {
@@ -410,7 +412,23 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
         }
 
         val folders = task.getFoldersCreated()
-        return result.copy(foldersCreated = folders)
+        // 附加反馈摘要到结果消息
+        val feedbackSummary = task.getFeedbackCollector().getSummary()
+        val enhancedMessage = buildString {
+            append(result.message)
+            if (feedbackSummary.aiClassifiedCount > 0) {
+                append(" | AI 分类 ${feedbackSummary.aiClassifiedCount} 个应用")
+                if (feedbackSummary.lowConfidenceCount > 0) {
+                    append("，${feedbackSummary.lowConfidenceCount} 个低置信度")
+                }
+            }
+        }
+        return StrategyResult(
+            success = result.success,
+            message = enhancedMessage,
+            foldersCreated = folders,
+            appsOrganized = result.stepsExecuted
+        )
     }
 
     fun isServiceEnabled() = instance != null
