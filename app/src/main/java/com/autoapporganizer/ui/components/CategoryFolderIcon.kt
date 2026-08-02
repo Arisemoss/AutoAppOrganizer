@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.autoapporganizer.ui.theme.AppCategory
 import com.autoapporganizer.ui.theme.ShapeCategoryTile
 
@@ -54,7 +55,7 @@ fun CategoryFolderIcon(
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = category.label,
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
                 color = Color.White.copy(alpha = 0.8f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

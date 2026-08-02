@@ -5,7 +5,10 @@ import androidx.compose.animation.core.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -24,9 +27,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Accessibility
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -38,9 +38,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.autoapporganizer.ui.components.AppBackground
@@ -58,20 +60,24 @@ import com.autoapporganizer.ui.theme.primaryLinearGradient
 private data class GuideStep(
     val title: String,
     val desc: String,
-    val icon: ImageVector,
-    val accent: Color
+    val accent: Color,
+    val illustration: StepIllustration
 )
 
+/** 插图类型 —— 决定 Canvas 手绘内容。 */
+private enum class StepIllustration { ACCESSIBILITY, LAYERS, CHECK }
+
 private val guideSteps = listOf(
-    GuideStep("开启无障碍服务", "允许「桌面整理」读取桌面节点并执行拖拽手势，这是自动分类的前提。", Icons.Outlined.Accessibility, AuroraCyan),
-    GuideStep("开启悬浮窗权限", "Android 15 与部分机型需要悬浮窗权限才能正常派发拖拽手势。", Icons.Outlined.Layers, ElectricPurple),
-    GuideStep("准备就绪", "权限配置完成，回到主控制台即可一键整理桌面。", Icons.Outlined.CheckCircle, NeonPink)
+    GuideStep("开启无障碍服务", "允许「桌面整理」读取桌面节点并执行拖拽手势，这是自动分类的前提。", AuroraCyan, StepIllustration.ACCESSIBILITY),
+    GuideStep("开启悬浮窗权限", "Android 15 与部分机型需要悬浮窗权限才能正常派发拖拽手势。", ElectricPurple, StepIllustration.LAYERS),
+    GuideStep("准备就绪", "权限配置完成，回到主控制台即可一键整理桌面。", NeonPink, StepIllustration.CHECK)
 )
 
 /**
  * 页面 5：无障碍引导 / Accessibility Guide
  *
- * 步骤引导式全页设计：3 步进度点 + 渐变插图（蓝→紫→粉）+ 底部固定操作。
+ * 步骤引导式全页设计：3 步进度点 + 渐变线条插图（蓝→紫→粉）+ 底部固定操作。
+ * 步骤切换使用 Shared Axis 水平滑入转场。
  */
 @Composable
 fun AccessibilityGuideScreen(
@@ -84,6 +90,7 @@ fun AccessibilityGuideScreen(
     val titleColor = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A)
     var step by remember { mutableIntStateOf(0) }
     val current = guideSteps[step]
+    // 插图色彩随步骤渐变（蓝→紫→粉）
     val glowColor by animateColorAsState(current.accent, animationSpec = tween(500), label = "glow")
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -119,13 +126,18 @@ fun AccessibilityGuideScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // 插图 + 文案（步骤切换转场 + 色相渐变）
+            // 插图 + 文案 —— Shared Axis 水平转场 + 色相渐变
             AnimatedContent(
                 targetState = step,
-                transitionSpec = { fadeIn(tween(350)) togetherWith fadeOut(tween(200)) },
+                transitionSpec = {
+                    // Shared Axis：新步从右滑入，旧步向左滑出
+                    (slideInHorizontally(tween(350)) { w -> w / 3 } + fadeIn(tween(350))) togetherWith
+                        (slideOutHorizontally(tween(250)) { w -> -w / 3 } + fadeOut(tween(250)))
+                },
                 label = "guideStep"
             ) { s ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // 渐变线条插图（Canvas 手绘）
                     Box(
                         modifier = Modifier
                             .size(140.dp)
@@ -137,20 +149,11 @@ fun AccessibilityGuideScreen(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(88.dp)
-                                .clip(RoundedCornerShape(24.dp))
-                                .background(Brush.linearGradient(listOf(glowColor, glowColor.copy(alpha = 0.6f)))),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = guideSteps[s].icon,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(44.dp)
-                            )
-                        }
+                        GradientLineIllustration(
+                            type = guideSteps[s].illustration,
+                            color = glowColor,
+                            modifier = Modifier.size(88.dp)
+                        )
                     }
                     Spacer(modifier = Modifier.height(24.dp))
                     Text(
@@ -186,6 +189,52 @@ fun AccessibilityGuideScreen(
             )
 
             Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+/**
+ * 渐变线条风格插图 —— 用 Canvas 手绘渐变描边线条，替代实色 Material 图标。
+ */
+@Composable
+private fun GradientLineIllustration(
+    type: StepIllustration,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    val brush = Brush.linearGradient(listOf(color, color.copy(alpha = 0.5f)))
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = Stroke(width = 3f, cap = StrokeCap.Round)
+        when (type) {
+            StepIllustration.ACCESSIBILITY -> {
+                // 人形：头 + 身体 + 双臂 + 双腿
+                drawCircle(brush = brush, radius = w * 0.08f, center = Offset(w * 0.5f, h * 0.22f), style = stroke)
+                // 身体
+                drawLine(brush, Offset(w * 0.5f, h * 0.32f), Offset(w * 0.5f, h * 0.62f), strokeWidth = 3f, cap = StrokeCap.Round)
+                // 双臂
+                drawLine(brush, Offset(w * 0.28f, h * 0.42f), Offset(w * 0.72f, h * 0.42f), strokeWidth = 3f, cap = StrokeCap.Round)
+                // 双腿
+                drawLine(brush, Offset(w * 0.5f, h * 0.62f), Offset(w * 0.32f, h * 0.85f), strokeWidth = 3f, cap = StrokeCap.Round)
+                drawLine(brush, Offset(w * 0.5f, h * 0.62f), Offset(w * 0.68f, h * 0.85f), strokeWidth = 3f, cap = StrokeCap.Round)
+            }
+            StepIllustration.LAYERS -> {
+                // 三层堆叠
+                for (i in 0..2) {
+                    val y = h * (0.25f + i * 0.22f)
+                    drawLine(brush, Offset(w * 0.2f, y), Offset(w * 0.8f, y), strokeWidth = 3f, cap = StrokeCap.Round)
+                    // 层间斜线
+                    if (i < 2) {
+                        drawLine(brush, Offset(w * 0.8f, y), Offset(w * 0.2f, y + h * 0.22f), strokeWidth = 2f, cap = StrokeCap.Round)
+                    }
+                }
+            }
+            StepIllustration.CHECK -> {
+                // 对勾
+                drawLine(brush, Offset(w * 0.25f, h * 0.5f), Offset(w * 0.42f, h * 0.67f), strokeWidth = 4f, cap = StrokeCap.Round)
+                drawLine(brush, Offset(w * 0.42f, h * 0.67f), Offset(w * 0.75f, h * 0.3f), strokeWidth = 4f, cap = StrokeCap.Round)
+            }
         }
     }
 }

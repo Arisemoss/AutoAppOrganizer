@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -26,7 +27,6 @@ import com.autoapporganizer.ui.theme.BorderSubtleLight
 import com.autoapporganizer.ui.theme.DarkSurface
 import com.autoapporganizer.ui.theme.LightSurface
 import com.autoapporganizer.ui.theme.LocalIsDark
-import com.autoapporganizer.ui.theme.backgroundRadialGradient
 import com.autoapporganizer.ui.theme.primaryLinearGradient
 
 /**
@@ -39,10 +39,20 @@ fun AppBackground(
     blobs: List<@Composable () -> Unit> = emptyList()
 ) {
     val isDark = LocalIsDark.current
+    val centerColor = if (isDark) DarkBgEnd else LightBgEnd
+    val edgeColor = if (isDark) DarkBgStart else LightBgStart
     Box(
         modifier = modifier
             .fillMaxSize()
-            .drawBehind { drawRect(brush = backgroundRadialGradient(isDark)) }
+            .drawBehind {
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(centerColor, edgeColor),
+                        center = Offset(size.width * 0.5f, size.height * 0.3f),
+                        radius = size.maxDimension
+                    )
+                )
+            }
     ) {
         blobs.forEach { it() }
     }
@@ -83,8 +93,8 @@ fun GlassCard(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        surfaceColor.copy(alpha = if (isDark) 0.85f else 0.80f),
-                        surfaceColor.copy(alpha = if (isDark) 0.72f else 0.65f)
+                        surfaceColor.copy(alpha = 0.72f),
+                        surfaceColor.copy(alpha = if (isDark) 0.65f else 0.55f)
                     )
                 )
             )

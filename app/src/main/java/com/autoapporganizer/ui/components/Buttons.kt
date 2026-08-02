@@ -18,8 +18,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.autoapporganizer.ui.theme.BorderSubtleDark
@@ -27,7 +29,7 @@ import com.autoapporganizer.ui.theme.BorderSubtleLight
 import com.autoapporganizer.ui.theme.LocalIsDark
 import com.autoapporganizer.ui.theme.TextSecondaryDark
 import com.autoapporganizer.ui.theme.TextSecondaryLight
-import com.autoapporganizer.ui.theme.flowingPrimaryGradient
+import com.autoapporganizer.ui.theme.flowingGradientColors
 import com.autoapporganizer.ui.theme.primaryLinearGradient
 
 /**
@@ -50,18 +52,28 @@ fun PrimaryGradientButton(
         label = "shift"
     )
     val shape = RoundedCornerShape(16.dp)
+    val colors = flowingGradientColors(isDark)
     Box(
         modifier = modifier
             .height(56.dp)
             .clip(shape)
             .drawBehind {
-                val brush = if (enabled) {
-                    flowingPrimaryGradient(isDark, shift)
+                if (enabled) {
+                    // 渐变跨度为按钮宽度的 1.5 倍，shift 驱动水平位移，Mirror 保证边缘连续
+                    val span = size.width * 1.5f
+                    val offset = shift * span - span * 0.25f
+                    drawRect(
+                        brush = Brush.linearGradient(
+                            colors = colors,
+                            start = Offset(offset, 0f),
+                            end = Offset(offset + span, 0f),
+                            tileMode = TileMode.Mirror
+                        )
+                    )
                 } else {
-                    primaryLinearGradient(isDark)
+                    drawRect(brush = primaryLinearGradient(isDark))
+                    drawRect(color = Color(0x55000000))
                 }
-                drawRect(brush = brush)
-                if (!enabled) drawRect(color = Color(0x55000000))
             }
             .bounceClick(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center

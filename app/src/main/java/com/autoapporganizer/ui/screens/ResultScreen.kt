@@ -7,13 +7,11 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,7 +28,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.autoapporganizer.ui.OrganizeResult
 import com.autoapporganizer.ui.components.AppBackground
 import com.autoapporganizer.ui.components.AppIconThumb
@@ -47,7 +45,6 @@ import com.autoapporganizer.ui.components.CategoryFolderIcon
 import com.autoapporganizer.ui.components.CountUpText
 import com.autoapporganizer.ui.components.GlassCard
 import com.autoapporganizer.ui.components.GradientCircularProgress
-import com.autoapporganizer.ui.components.GradientText
 import com.autoapporganizer.ui.components.PrimaryGradientButton
 import com.autoapporganizer.ui.components.bounceClick
 import com.autoapporganizer.ui.components.gradientBorder
@@ -57,11 +54,16 @@ import com.autoapporganizer.ui.theme.LocalIsDark
 import com.autoapporganizer.ui.theme.TextSecondaryDark
 import com.autoapporganizer.ui.theme.TextSecondaryLight
 import com.autoapporganizer.ui.theme.primaryLinearGradient
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * 页面 3：整理完成 / Result
  *
- * 成功动画：圆环收缩为一点 → 分类图标弹性爆发归位 → 结果摘要卡片从底部滑入。
+ * 成功动画：圆环收缩为一点 → 延迟 400ms 后 12 个分类图标从中心向四周径向散开（600ms elastic out，错峰）。
+ * 结果摘要卡片从底部滑入。
  */
 @Composable
 fun ResultScreen(
@@ -72,7 +74,10 @@ fun ResultScreen(
     val isDark = LocalIsDark.current
     val secondaryText = if (isDark) TextSecondaryDark else TextSecondaryLight
 
-    // 圆环收缩动画（入场即播）
+    // 缓存分类列表，避免每次重组重排序
+    val categoryList = remember(result) { result.categoryList }
+
+    // 圆环收缩动画
     val ringScale = remember { Animatable(1f) }
     LaunchedEffect(Unit) {
         ringScale.animateTo(0f, animationSpec = tween(400))
@@ -81,6 +86,7 @@ fun ResultScreen(
     // 摘要卡片入场
     val cardState = remember { MutableTransitionState(false) }
     LaunchedEffect(Unit) {
+        delay(300)
         cardState.targetState = true
     }
 
@@ -96,9 +102,9 @@ fun ResultScreen(
         ) {
             Spacer(modifier = Modifier.height(16.dp))
 
-            // ── 爆发动画区 ──
+            // ── 径向散射爆发动画区 ──
             Box(
-                modifier = Modifier.fillMaxWidth().height(150.dp),
+                modifier = Modifier.fillMaxWidth().height(160.dp),
                 contentAlignment = Alignment.Center
             ) {
                 // 收缩的圆环
@@ -116,14 +122,14 @@ fun ResultScreen(
                         glow = true
                     )
                 }
-                // 分类图标爆发归位
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    result.categoryList.take(12).forEachIndexed { i, (cat, _) ->
-                        BurstIcon(category = cat, index = i)
-                    }
+                // 分类图标从中心向四周径向散开
+                val burstItems = categoryList.take(12)
+                burstItems.forEachIndexed { i, (cat, _) ->
+                    BurstIcon(
+                        category = cat,
+                        index = i,
+                        total = burstItems.size
+                    )
                 }
             }
 
@@ -133,7 +139,7 @@ fun ResultScreen(
             AnimatedVisibility(
                 visibleState = cardState,
                 enter = slideInVertically(
-                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                    animationSpec = tween(400),
                     initialOffsetY = { it / 2 }
                 ) + fadeIn(animationSpec = tween(400))
             ) {
@@ -156,12 +162,12 @@ fun ResultScreen(
 
                         Spacer(modifier = Modifier.height(20.dp))
 
-                        // 分类列表
+                        // 分类列表 —— weight(1f) 约束高度，保证底部按钮可见
                         LazyColumn(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.weight(1f, fill = false).fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(result.categoryList, key = { it.first.name }) { (cat, count) ->
+                            items(categoryList, key = { it.first.name }) { (cat, count) ->
                                 CategoryRow(category = cat, count = count)
                             }
                         }
@@ -187,29 +193,66 @@ fun ResultScreen(
     }
 }
 
-/** 爆发归位的单个分类图标：scale 0→1 弹性，延迟入场。 */
+/**
+ * 径向散射爆发图标：从中心向圆周位置位移 + scale 0→1 弹性。
+ * 延迟 [400ms + index*50ms] 启动，等圆环收缩完成后爆发。
+ */
 @Composable
-private fun BurstIcon(category: AppCategory, index: Int) {
-    val state = remember { MutableTransitionState(false) }
+private fun BurstIcon(category: AppCategory, index: Int, total: Int) {
+    val angle = (index.toFloat() / total) * 2f * Math.PI.toFloat()
+    val radius = 120f // 散开半径（dp）
+    val targetX = (cos(angle) * radius)
+    val targetY = (sin(angle) * radius * 0.7f) // 椭圆散射，纵向略压
+
+    val scale = remember { Animatable(0f) }
+    val x = remember { Animatable(0f) }
+    val y = remember { Animatable(0f) }
+
     LaunchedEffect(Unit) {
-        // 等圆环收缩后再爆发
-        state.targetState = true
+        delay(400L + index * 50L)
+        launch {
+            scale.animateTo(
+                1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+        }
+        launch {
+            x.animateTo(
+                targetX,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+        }
+        launch {
+            y.animateTo(
+                targetY,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+        }
     }
-    AnimatedVisibility(
-        visibleState = state,
-        enter = scaleIn(
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMediumLow
-            ),
-            initialScale = 0.2f
-        ) + fadeIn(animationSpec = tween(300, delayMillis = 0))
+
+    Box(
+        modifier = Modifier.graphicsLayer {
+            translationX = x.value
+            translationY = y.value
+            scaleX = scale.value
+            scaleY = scale.value
+            alpha = scale.value
+        }
     ) {
         CategoryFolderIcon(category = category, tileSize = 44, showName = false)
     }
 }
 
-/** 统计列：CountUp 渐变数字 + 标签。 */
+/** 统计列：CountUp 渐变数字 + 标签（12sp）。 */
 @Composable
 private fun StatColumn(value: Int, label: String, modifier: Modifier = Modifier) {
     val isDark = LocalIsDark.current
@@ -225,7 +268,7 @@ private fun StatColumn(value: Int, label: String, modifier: Modifier = Modifier)
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = label,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
             color = if (isDark) TextSecondaryDark else TextSecondaryLight,
             textAlign = TextAlign.Center
         )

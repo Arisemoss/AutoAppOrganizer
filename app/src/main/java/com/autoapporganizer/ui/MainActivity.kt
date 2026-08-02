@@ -5,19 +5,19 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.autoapporganizer.service.AutoAppOrganizerService
+import com.autoapporganizer.ui.components.LiquidSnackbarHost
+import com.autoapporganizer.ui.components.SnackType
 import com.autoapporganizer.ui.screens.AccessibilityGuideScreen
 import com.autoapporganizer.ui.screens.BackupScreen
 import com.autoapporganizer.ui.screens.HomeScreen
@@ -27,18 +27,23 @@ import com.autoapporganizer.ui.theme.AppCategory
 import com.autoapporganizer.ui.theme.AutoAppOrganizerTheme
 import com.autoapporganizer.util.BackupManager
 import com.autoapporganizer.util.HistoryManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 主控制台 —— Compose 宿主。
  *
  * 持有导航状态与整理流程状态，通过 [AutoAppOrganizerService.organizeCallback]
- * 接收进度/完成回调，驱动 Organizing / Result 页面流转。
+ * 接收进度/完成回调（统一切回主线程），驱动 Organizing / Result 页面流转。
  * 保留对原有 [SettingsActivity] 的跳转，以及视觉整理 / 诊断入口。
  */
 class MainActivity : ComponentActivity() {
 
     private lateinit var historyManager: HistoryManager
     private lateinit var backupManager: BackupManager
+    private val mainScope = MainScope()
 
     // ── 导航与整理状态 ──
     private var screen by mutableStateOf(Screen.Home)
@@ -58,32 +63,44 @@ class MainActivity : ComponentActivity() {
     private var backups by mutableStateOf<List<BackupEntry>>(emptyList())
     private var autoBackup by mutableStateOf(true)
 
+    // ── Snackbar 状态 ──
+    private var snackMessage by mutableStateOf("")
+    private var snackType by mutableStateOf(SnackType.INFO)
+
     private enum class OpMode { IDLE, ORGANIZE, VISION, UNDO }
 
     private val organizeCallback = object : AutoAppOrganizerService.OrganizeCallback {
         override fun onProgress(progress: Int, message: String) {
-            organizeProgress = (progress / 100f).coerceIn(0f, 1f)
-            organizeMessage = message
+            // 回调可能从后台线程触发，统一切回主线程更新 Compose 状态
+            mainScope.launch {
+                withContext(Dispatchers.Main.immediate) {
+                    organizeProgress = (progress / 100f).coerceIn(0f, 1f)
+                    organizeMessage = message
+                }
+            }
         }
 
         override fun onComplete(success: Boolean, folderCount: Int, message: String) {
-            val latest = historyManager.latest()
-            val result = OrganizeResult(
-                success = success,
-                folderCount = folderCount,
-                appCount = latest?.appCount ?: 0,
-                categories = latest?.categories ?: emptyMap(),
-                message = message
-            )
-            organizeResult = result
-            val wasOrganize = opMode == OpMode.ORGANIZE || opMode == OpMode.VISION
-            opMode = OpMode.IDLE
-            refreshAll()
-            if (success && wasOrganize && folderCount >= 0 && latest != null) {
-                screen = Screen.Result
-            } else {
-                screen = Screen.Home
-                Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+            mainScope.launch {
+                // 磁盘 I/O 切到 IO 线程
+                val latest = withContext(Dispatchers.IO) { historyManager.latest() }
+                val result = OrganizeResult(
+                    success = success,
+                    folderCount = folderCount,
+                    appCount = latest?.appCount ?: 0,
+                    categories = latest?.categories ?: emptyMap(),
+                    message = message
+                )
+                organizeResult = result
+                val wasOrganize = opMode == OpMode.ORGANIZE || opMode == OpMode.VISION
+                opMode = OpMode.IDLE
+                refreshAll()
+                if (success && wasOrganize && folderCount >= 0 && latest != null) {
+                    screen = Screen.Result
+                } else {
+                    screen = Screen.Home
+                    showSnack(message, if (success) SnackType.SUCCESS else SnackType.ERROR)
+                }
             }
         }
     }
@@ -101,13 +118,18 @@ class MainActivity : ComponentActivity() {
         setContent {
             AutoAppOrganizerTheme {
                 AppRoot()
+                // 全局 Snackbar
+                LiquidSnackbarHost(
+                    message = snackMessage,
+                    type = snackType,
+                    onDismiss = { snackMessage = "" }
+                )
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // 服务可能在 onCreate 后才连接，每次回前台重新绑定回调与状态
         AutoAppOrganizerService.organizeCallback = organizeCallback
         refreshAll()
     }
@@ -119,8 +141,8 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun AppRoot() {
-        // 非主页 & 非整理中时，返回键回到主页
-        BackHandler(enabled = screen != Screen.Home && screen != Screen.Organizing) {
+        // 非主页时返回键回到主页；Organizing 页也允许返回（取消整理）
+        BackHandler(enabled = screen != Screen.Home) {
             screen = Screen.Home
         }
 
@@ -155,9 +177,11 @@ class MainActivity : ComponentActivity() {
                 onAutoBackupChange = { autoBackup = it },
                 onRestore = { undoOrganize() },
                 onDelete = { entry ->
-                    historyManager.delete(entry.timestamp)
-                    refreshBackups()
-                    Toast.makeText(this, "已删除该记录", Toast.LENGTH_SHORT).show()
+                    mainScope.launch {
+                        withContext(Dispatchers.IO) { historyManager.delete(entry.timestamp) }
+                        refreshBackups()
+                        showSnack("已删除该记录", SnackType.INFO)
+                    }
                 },
                 onBack = { screen = Screen.Home }
             )
@@ -175,26 +199,43 @@ class MainActivity : ComponentActivity() {
     // ──────────────────────────────────────────────
 
     private fun refreshAll() {
-        val serviceOn = AutoAppOrganizerService.instance != null
-        val overlay = hasOverlayPermission()
-        ready = serviceOn && overlay
-
-        val latest = historyManager.latest()
-        pendingAppCount = latest?.appCount ?: 0
-        lastOrganizeLabel = latest?.let { relativeLabel(it.timestamp) } ?: "尚未"
-        backupLabel = if (backupManager.hasBackup()) "已就绪" else "未开启"
-        refreshBackups()
+        mainScope.launch {
+            val (serviceOn, overlay, latest, hasBackup, allBackups) = withContext(Dispatchers.IO) {
+                val svc = AutoAppOrganizerService.instance != null
+                val ov = hasOverlayPermission()
+                val lat = historyManager.latest()
+                val hb = backupManager.hasBackup()
+                val all = historyManager.loadAll()
+                FiveTuple(svc, ov, lat, hb, all)
+            }
+            ready = serviceOn && overlay
+            pendingAppCount = latest?.appCount ?: 0
+            lastOrganizeLabel = latest?.let { relativeLabel(it.timestamp) } ?: "尚未"
+            backupLabel = if (hasBackup) "已就绪" else "未开启"
+            val now = System.currentTimeMillis()
+            backups = allBackups.map { s ->
+                BackupEntry(
+                    timestamp = s.timestamp,
+                    folderCount = s.folderCount,
+                    appCount = s.appCount,
+                    fresh = (now - s.timestamp) < 7L * 24 * 60 * 60 * 1000
+                )
+            }
+        }
     }
 
     private fun refreshBackups() {
-        val now = System.currentTimeMillis()
-        backups = historyManager.loadAll().map { s ->
-            BackupEntry(
-                timestamp = s.timestamp,
-                folderCount = s.folderCount,
-                appCount = s.appCount,
-                fresh = (now - s.timestamp) < 7L * 24 * 60 * 60 * 1000
-            )
+        mainScope.launch {
+            val now = System.currentTimeMillis()
+            val all = withContext(Dispatchers.IO) { historyManager.loadAll() }
+            backups = all.map { s ->
+                BackupEntry(
+                    timestamp = s.timestamp,
+                    folderCount = s.folderCount,
+                    appCount = s.appCount,
+                    fresh = (now - s.timestamp) < 7L * 24 * 60 * 60 * 1000
+                )
+            }
         }
     }
 
@@ -206,6 +247,15 @@ class MainActivity : ComponentActivity() {
             days < 30 -> "${days}天前"
             else -> "${days / 30}月前"
         }
+    }
+
+    // ──────────────────────────────────────────────
+    // Snackbar
+    // ──────────────────────────────────────────────
+
+    private fun showSnack(message: String, type: SnackType = SnackType.INFO) {
+        snackMessage = message
+        snackType = type
     }
 
     // ──────────────────────────────────────────────
@@ -230,7 +280,7 @@ class MainActivity : ComponentActivity() {
                 screen = Screen.Accessibility
             }
             !hasOverlayPermission() -> {
-                Toast.makeText(this, "请先开启悬浮窗权限", Toast.LENGTH_SHORT).show()
+                showSnack("请先开启悬浮窗权限", SnackType.ERROR)
                 startActivity(
                     Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
                 )
@@ -265,17 +315,17 @@ class MainActivity : ComponentActivity() {
     private fun runDiagnostic() {
         val service = AutoAppOrganizerService.instance
         if (service == null) {
-            Toast.makeText(this, "请先开启无障碍服务", Toast.LENGTH_SHORT).show()
+            showSnack("请先开启无障碍服务", SnackType.ERROR)
             return
         }
         service.runDiagnostic()
-        Toast.makeText(this, "诊断中，请稍候", Toast.LENGTH_SHORT).show()
+        showSnack("诊断中，请稍候", SnackType.INFO)
     }
 
     private fun undoOrganize() {
         val service = AutoAppOrganizerService.instance
         if (service == null) {
-            Toast.makeText(this, "服务未连接", Toast.LENGTH_SHORT).show()
+            showSnack("服务未连接", SnackType.ERROR)
             return
         }
         opMode = OpMode.UNDO
@@ -286,8 +336,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadPreviewCategories() {
-        previewCategories = historyManager.latest()?.sortedCategories
-            ?.map { AppCategory.fromLabel(it.key) to it.value }
-            ?: emptyList()
+        mainScope.launch {
+            val latest = withContext(Dispatchers.IO) { historyManager.latest() }
+            previewCategories = latest?.sortedCategories
+                ?.map { AppCategory.fromLabel(it.key) to it.value }
+                ?: emptyList()
+        }
     }
+
+    /** 五元组辅助类，用于一次性从 IO 线程返回多个值。 */
+    private data class FiveTuple(
+        val serviceOn: Boolean,
+        val overlay: Boolean,
+        val latest: com.autoapporganizer.model.OrganizeSession?,
+        val hasBackup: Boolean,
+        val allBackups: List<com.autoapporganizer.model.OrganizeSession>
+    )
 }

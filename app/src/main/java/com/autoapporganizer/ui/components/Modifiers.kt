@@ -1,8 +1,5 @@
 package com.autoapporganizer.ui.components
 
-import android.graphics.RenderEffect as AndroidRenderEffect
-import android.graphics.Shader
-import android.os.Build
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -19,9 +16,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -74,16 +69,9 @@ fun Modifier.topLightLine(brush: Brush): Modifier = this.drawWithContent {
 }
 
 /**
- * 毛玻璃模糊（Android 12+ 真实 RenderEffect；低版本回退为无操作，
- * 由 [GlassCard] 的半透明渐变 + 边框兜底视觉）。
+ * 毛玻璃视觉模拟 —— 不使用 RenderEffect（它会模糊卡片自身内容导致文字不可读），
+ * 改为通过半透明渐变 + 边框 + 顶部光线在 [GlassCard] 内组合呈现毛玻璃质感。
+ * 保留此修饰符作为 no-op 占位，避免破坏调用方签名。
  */
 @Composable
-fun Modifier.backdropBlur(radius: Dp = 32.dp): Modifier {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
-    val px = with(LocalDensity.current) { radius.toPx() }
-    return this.graphicsLayer {
-        renderEffect = AndroidRenderEffect
-            .createBlurEffect(px, px, Shader.TileMode.CLAMP)
-            .asComposeRenderEffect()
-    }
-}
+fun Modifier.backdropBlur(radius: Dp = 32.dp): Modifier = this

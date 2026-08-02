@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.autoapporganizer.ui.theme.AuroraCyan
 import com.autoapporganizer.ui.theme.ElectricPurple
 import com.autoapporganizer.ui.theme.LocalIsDark
@@ -85,7 +86,7 @@ fun OrbitVisualizer(
             )
             Text(
                 text = countLabel,
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
                 color = if (isDark) TextSecondaryDark else TextSecondaryLight
             )
         }
