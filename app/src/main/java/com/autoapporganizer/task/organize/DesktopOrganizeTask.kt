@@ -5,6 +5,13 @@ import android.graphics.Rect
 import com.autoapporganizer.core.action.Action
 import com.autoapporganizer.core.agent.AgentTask
 import com.autoapporganizer.core.agent.TaskState
+import com.autoapporganizer.core.classification.ClassificationFusion
+import com.autoapporganizer.core.classification.ClassificationResponse
+import com.autoapporganizer.core.classification.SemanticClassifier
+import com.autoapporganizer.core.feedback.ClassificationCache
+import com.autoapporganizer.core.feedback.FeedbackCollector
+import com.autoapporganizer.core.layout.DragOptimizer
+import com.autoapporganizer.core.model.VisionModelService
 import com.autoapporganizer.core.model.VisionResult
 import com.autoapporganizer.core.perception.AccessibilityChannel
 import com.autoapporganizer.core.perception.PerceptionFusion
@@ -32,7 +39,8 @@ class DesktopOrganizeTask(
     private val perceptionChannel: AccessibilityChannel,
     private val visionChannel: VisionChannel,
     private val service: AccessibilityService,
-    private val prefs: PrefsManager
+    private val prefs: PrefsManager,
+    private val vlmService: VisionModelService? = null
 ) : AgentTask {
 
     companion object {
@@ -54,6 +62,23 @@ class DesktopOrganizeTask(
     private var foldersCreated = 0
     private val categoryMatcher = CategoryMatcher(service)
 
+    /** AI 语义分类器（VLM 驱动），仅当 VLM 可用时初始化 */
+    private val semanticClassifier: SemanticClassifier? =
+        if (vlmService != null && vlmService.isAvailable) {
+            SemanticClassifier(vlmService, categoryMatcher)
+        } else {
+            null
+        }
+
+    /** 最近一次 AI 分类响应（用于日志和低置信度展示） */
+    private var lastClassificationResponse: ClassificationResponse? = null
+
+    /** 反馈收集器（低置信度项追踪） */
+    private val feedbackCollector = FeedbackCollector()
+
+    /** 分类缓存（持久化 AI 分类结果，加速后续整理） */
+    private val classificationCache = ClassificationCache(service)
+
     /** Categorized icons: category name → list of elements belonging to it. */
     private var categorized: Map<String, List<ScreenElement>> = emptyMap()
 
@@ -71,14 +96,16 @@ class DesktopOrganizeTask(
 
         // Merge accessibility and vision evidence using the dedicated fusion layer.
         val merged = PerceptionFusion.merge(visionItems, perception)
-        categorized = categorize(merged)
+
+        // 使用 AI 语义分类 + 关键词兜底（参考 Operit autoCategorizeMemories）
+        categorized = categorizeWithAI(merged)
 
         // Only keep categories that meet the minimum folder size.
         val minSize = prefs.minFolderSize.coerceAtLeast(2)
-        categoryQueue = categorized
-            .filter { it.value.size >= minSize }
-            .keys
-            .toMutableList()
+        val eligible = categorized.filter { it.value.size >= minSize }
+
+        // 空间优化：按图标数量和空间集中度排序分类优先级（参考 Operit 的知识图谱批量处理）
+        categoryQueue = DragOptimizer.prioritizeCategories(eligible).toMutableList()
 
         DiagnosticLogger.info(
             TAG,
@@ -122,12 +149,15 @@ class DesktopOrganizeTask(
 
         val cat = categoryQueue.first()
         val elements = categorized[cat].orEmpty()
-        val anchor = elements[0]
-        val second = elements[1]
+
+        // 空间优化：选择距离质心最近的图标对作为锚点，减少拖拽距离
+        val (anchorIdx, secondIdx) = com.autoapporganizer.core.layout.SpatialClusterer.findAnchorPair(elements)
+        val anchor = elements[anchorIdx]
+        val second = elements[secondIdx]
 
         DiagnosticLogger.info(
             TAG,
-            "reason: creating folder for '$cat' by dragging ${anchor.label} onto ${second.label}"
+            "reason: creating folder for '$cat' by dragging ${anchor.label} onto ${second.label} (spatial optimized)"
         )
         return Action.Drag(
             anchor.centerX, anchor.centerY,
@@ -194,16 +224,20 @@ class DesktopOrganizeTask(
                         return state.copy(step = state.step + 1, errors = errors)
                     }
 
+                    // 使用空间优化后的锚点对：文件夹创建在 second 图标的位置
+                    val (_, secondIdx) = com.autoapporganizer.core.layout.SpatialClusterer.findAnchorPair(elements)
+                    val secondElement = elements[secondIdx]
+
                     // The folder should now exist near the second icon. Use the second icon's
                     // original bounds as the initial folder location; reasonDrag will re-locate
                     // it before each subsequent drop.
                     newContext[PHASE] = "drag"
                     newContext[CATEGORY] = cat
                     newContext[DRAG_INDEX] = 2
-                    newContext[FOLDER_BOUNDS] = elements[1].bounds
+                    newContext[FOLDER_BOUNDS] = secondElement.bounds
                     foldersCreated++
                     newItems += 2 // anchor + second are now inside the folder
-                    DiagnosticLogger.info(TAG, "observe: folder created for '$cat'")
+                    DiagnosticLogger.info(TAG, "observe: folder created for '$cat' at ${secondElement.bounds}")
                 } else {
                     DiagnosticLogger.warn(TAG, "observe: folder creation failed, will retry")
                 }
@@ -270,10 +304,68 @@ class DesktopOrganizeTask(
     // Helpers
     // ──────────────────────────────────────────────
 
-    /** Categorize screen elements using [CategoryMatcher]. */
+    /** 使用 AI 语义分类 + 关键词兜底进行图标分类（参考 Operit 的多路信号融合） */
+    private suspend fun categorizeWithAI(elements: List<ScreenElement>): Map<String, List<ScreenElement>> {
+        // 1. 先查缓存，记录命中情况（参考 Operit 的知识图谱去重机制）
+        for (el in elements) {
+            val cached = classificationCache.lookup(el.label)
+            if (cached != null) {
+                DiagnosticLogger.debug(TAG, "Cache hit: '${el.label}' → $cached")
+            }
+        }
+
+        // 2. 尝试 AI 语义分类
+        val aiResponse = semanticClassifier?.classify(elements)
+        lastClassificationResponse = aiResponse
+
+        if (aiResponse != null) {
+            DiagnosticLogger.info(
+                TAG,
+                "AI classification: ${aiResponse.categories.size} categories, " +
+                    "${aiResponse.uncertain.size} uncertain - ${aiResponse.thought ?: ""}"
+            )
+
+            // 收集反馈：低置信度项
+            feedbackCollector.collect(aiResponse, elements.size)
+
+            // 缓存高置信度结果
+            val allApps = aiResponse.categories.flatMap { it.apps }
+            classificationCache.cacheBatch(allApps)
+
+            // 记录低置信度项
+            val lowConfidence = allApps
+                .filter { it.confidence < SemanticClassifier.CONFIDENCE_THRESHOLD }
+            if (lowConfidence.isNotEmpty()) {
+                DiagnosticLogger.warn(
+                    TAG,
+                    "Low confidence classifications: ${lowConfidence.joinToString { "${it.label}→${it.category}(${it.confidence})" }}"
+                )
+            }
+        } else {
+            // AI 不可用时，记录为纯关键词兜底
+            feedbackCollector.collect(
+                ClassificationResponse(emptyList(), emptyList(), "VLM unavailable"),
+                elements.size
+            )
+        }
+
+        // 3. 融合 AI 分类和关键词分类
+        return ClassificationFusion.fuse(aiResponse, elements, categoryMatcher)
+    }
+
+    /** 旧版纯关键词分类（保留作为纯兜底，不再直接调用） */
     private fun categorize(elements: List<ScreenElement>): Map<String, List<ScreenElement>> {
         return elements.groupBy { categoryMatcher.matchCategory(it.label) }
     }
+
+    /** 获取最近一次分类响应（用于 UI 展示低置信度项） */
+    fun getLastClassificationResponse(): ClassificationResponse? = lastClassificationResponse
+
+    /** 获取反馈收集器（用于 UI 展示统计信息） */
+    fun getFeedbackCollector(): FeedbackCollector = feedbackCollector
+
+    /** 获取分类缓存（用于查看缓存状态） */
+    fun getClassificationCache(): ClassificationCache = classificationCache
 
     /**
      * Locate the folder created in the current category.
