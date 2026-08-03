@@ -273,13 +273,21 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
         } else 0
         return suspendCancellableCoroutine { cont ->
             service.takeScreenshot(displayId, service.mainExecutor) { screenshot ->
-                val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
-                    DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
-                    null
-                } else {
-                    screenshot.bitmap
+                try {
+                    val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
+                        DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
+                        null
+                    } else {
+                        // Copy to a software bitmap so the hardware buffer can be released.
+                        screenshot.bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    }
+                    if (cont.isActive) cont.resume(bitmap)
+                } catch (e: Exception) {
+                    DiagnosticLogger.error(TAG, "Screenshot processing failed: ${e.message}")
+                    if (cont.isActive) cont.resume(null)
+                } finally {
+                    screenshot?.close()
                 }
-                if (cont.isActive) cont.resume(bitmap)
             }
         }
     }

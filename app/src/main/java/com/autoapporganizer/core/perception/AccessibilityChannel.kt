@@ -125,6 +125,7 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
             }
             if (child != null) {
                 traverse(child, out)
+                child.recycle()
             }
         }
     }
@@ -142,12 +143,25 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
                         ContextCompat.getMainExecutor(service),
                         object : AccessibilityService.TakeScreenshotCallback {
                             override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                                val bitmap = result.bitmap
-                                DiagnosticLogger.debug(
-                                    TAG,
-                                    "Screenshot captured: ${bitmap.width}x${bitmap.height}"
-                                )
-                                if (cont.isActive) cont.resume(bitmap)
+                                try {
+                                    val srcBitmap = result.bitmap
+                                    // Copy to a software bitmap so the hardware buffer can be
+                                    // released immediately. The bitmap is consumed asynchronously
+                                    // (VLM encoding on a background thread); keeping the
+                                    // hardware-backed bitmap would require holding the
+                                    // ScreenshotResult open for the entire network round-trip.
+                                    val bitmap = srcBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                    DiagnosticLogger.debug(
+                                        TAG,
+                                        "Screenshot captured: ${bitmap?.width ?: -1}x${bitmap?.height ?: -1}"
+                                    )
+                                    if (cont.isActive) cont.resume(bitmap)
+                                } catch (e: Exception) {
+                                    DiagnosticLogger.error(TAG, "Screenshot bitmap copy failed: ${e.message}")
+                                    if (cont.isActive) cont.resume(null)
+                                } finally {
+                                    result.close()
+                                }
                             }
 
                             override fun onFailure(errorCode: Int) {
