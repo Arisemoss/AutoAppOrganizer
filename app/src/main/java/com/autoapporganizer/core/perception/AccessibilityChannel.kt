@@ -88,8 +88,14 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
     /**
      * Depth-first traversal of the node tree. A node is collected when it is clickable and
      * carries a usable label (content description or text) within the configured size range.
+     *
+     * Child nodes obtained via [AccessibilityNodeInfo.getChild] are recycled after their
+     * subtree has been traversed. Failing to recycle leaks node handles — the accessibility
+     * framework pools [AccessibilityNodeInfo] objects, and exhaustion causes [getChild] to
+     * return null, degrading scan results. This matches the recycling pattern used in
+     * [AutoAppOrganizerService.traverseNodes] and [NodeDumper.dumpRecursive].
      */
-    private fun traverse(node: AccessibilityNodeInfo, out: MutableList<ScreenElement>) {
+    internal fun traverse(node: AccessibilityNodeInfo, out: MutableList<ScreenElement>) {
         try {
             val bounds = Rect()
             node.getBoundsInScreen(bounds)
@@ -125,6 +131,11 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
             }
             if (child != null) {
                 traverse(child, out)
+                try {
+                    child.recycle()
+                } catch (e: Exception) {
+                    DiagnosticLogger.warn(TAG, "Failed to recycle child node: ${e.message}")
+                }
             }
         }
     }
