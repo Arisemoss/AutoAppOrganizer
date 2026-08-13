@@ -29,9 +29,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableTransitionState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -128,10 +129,10 @@ private fun CategoryPreviewCard(
     count: Int,
     index: Int
 ) {
-    val visibleState = remember { MutableTransitionState(false) }
-    LaunchedEffect(Unit) { visibleState.targetState = true }
+    val visibleState = remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visibleState.value = true }
     AnimatedVisibility(
-        visibleState = visibleState,
+        visible = visibleState.value,
         enter = slideInHorizontally(
             animationSpec = tween(300, delayMillis = index * 100),
             initialOffsetX = { it / 2 }

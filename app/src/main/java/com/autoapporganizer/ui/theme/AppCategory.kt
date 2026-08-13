@@ -48,7 +48,7 @@ enum class AppCategory(
     RARELY("不常用", Color(0xFF475569), Color(0xFF64748B), Icons.Outlined.MoreHoriz);
 
     /** 该分类的线性渐变（用于文件夹图标背景）。 */
-    val gradient: Brush.LinearGradient
+    val gradient: Brush
         get() = Brush.linearGradient(colors = listOf(start, end))
 
     companion object {

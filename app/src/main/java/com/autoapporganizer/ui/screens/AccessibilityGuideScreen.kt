@@ -1,7 +1,6 @@
 package com.autoapporganizer.ui.screens
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -33,6 +32,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -91,7 +92,7 @@ fun AccessibilityGuideScreen(
     var step by remember { mutableIntStateOf(0) }
     val current = guideSteps[step]
     // 插图色彩随步骤渐变（蓝→紫→粉）
-    val glowColor by animateColorAsState(current.accent, animationSpec = tween(500), label = "glow")
+    val glowColor = current.accent
 
     Box(modifier = Modifier.fillMaxSize()) {
         AppBackground()

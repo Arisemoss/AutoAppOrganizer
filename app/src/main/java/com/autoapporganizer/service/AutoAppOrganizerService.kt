@@ -550,8 +550,8 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
                 DiagnosticLogger.warn(TAG, "  1. 当前窗口不是桌面 (包名: $rootPkg)")
                 DiagnosticLogger.warn(TAG, "  2. Launcher 使用非标准视图结构")
                 DiagnosticLogger.warn(TAG, "  3. 权限不足 — 请检查无障碍、悬浮窗权限")
-                DiagnosticLogger.info(TAG, "被跳过的可疑节点 (${potentialNodes.size}):")
-                potentialNodes.take(20).forEach { DiagnosticLogger.debug(TAG, it) }
+                DiagnosticLogger.info(TAG, "被跳过的可疑节点 (${potentialNodes?.size}):")
+                potentialNodes?.take(20)?.forEach { DiagnosticLogger.debug(TAG, it) }
             }
         }
 

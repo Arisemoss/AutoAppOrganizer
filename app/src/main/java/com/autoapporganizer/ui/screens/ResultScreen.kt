@@ -1,7 +1,6 @@
 package com.autoapporganizer.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.MutableTransitionState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -28,7 +27,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,10 +86,10 @@ fun ResultScreen(
     }
 
     // 摘要卡片入场
-    val cardState = remember { MutableTransitionState(false) }
+    var showCard by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         delay(300)
-        cardState.targetState = true
+        showCard = true
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -137,7 +139,7 @@ fun ResultScreen(
 
             // ── 结果摘要卡片 ──
             AnimatedVisibility(
-                visibleState = cardState,
+                visible = showCard,
                 enter = slideInVertically(
                     animationSpec = tween(400),
                     initialOffsetY = { it / 2 }

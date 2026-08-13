@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.hardware.HardwareBuffer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -272,15 +273,21 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
             service.display?.displayId ?: 0
         } else 0
         return suspendCancellableCoroutine { cont ->
-            service.takeScreenshot(displayId, service.mainExecutor) { screenshot ->
-                val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
-                    DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
-                    null
-                } else {
-                    screenshot.bitmap
+            service.takeScreenshot(
+                displayId,
+                service.mainExecutor,
+                object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(screenshotResult: AccessibilityService.ScreenshotResult) {
+                        val bitmap = screenshotResult.hardwareBuffer?.let { Bitmap.wrapHardwareBuffer(it, screenshotResult.colorSpace) }
+                        if (cont.isActive) cont.resume(bitmap)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        DiagnosticLogger.warn(TAG, "Screenshot failed: errorCode=$errorCode")
+                        if (cont.isActive) cont.resume(null)
+                    }
                 }
-                if (cont.isActive) cont.resume(bitmap)
-            }
+            )
         }
     }
 }
