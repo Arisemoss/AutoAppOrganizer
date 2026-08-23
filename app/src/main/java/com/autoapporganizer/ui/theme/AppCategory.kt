@@ -15,6 +15,8 @@ import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SportsEsports
+import androidx.compose.material.icons.outlined.ChildCare
+import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -44,6 +46,8 @@ enum class AppCategory(
     FINANCE("金融", Color(0xFF14B8A6), Color(0xFF2DD4BF), Icons.Outlined.AccountBalance),
     HEALTH("健康", Color(0xFF22C55E), Color(0xFF4ADE80), Icons.Outlined.FitnessCenter),
     PHOTO("摄影", Color(0xFFD946EF), Color(0xFFE879F9), Icons.Outlined.PhotoCamera),
+    LIFE("生活", Color(0xFF78350F), Color(0xFFA16207), Icons.Outlined.Restaurant),
+    KIDS("亲子", Color(0xFFBE185D), Color(0xFFDB2777), Icons.Outlined.ChildCare),
     OTHER("其他", Color(0xFF64748B), Color(0xFF94A3B8), Icons.Outlined.MoreHoriz),
     RARELY("不常用", Color(0xFF475569), Color(0xFF64748B), Icons.Outlined.MoreHoriz);
 
