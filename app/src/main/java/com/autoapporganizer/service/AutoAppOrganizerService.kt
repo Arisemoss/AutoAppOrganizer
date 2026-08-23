@@ -64,6 +64,9 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
         // carries its own GESTURE_TIMEOUT_MS. If you need to tune the gesture timeout,
         // see GestureExecutor.GESTURE_TIMEOUT_MS.
 
+        /** 整理操作总超时（ms）—— 避免 VLM/手势挂死导致无限等待 */
+        private const val ORGANIZE_TIMEOUT_MS = 5 * 60 * 1000L // 5 分钟
+
         /** 已知桌面包名列表（检测当前窗口用）—— 必须与 accessibility_service_config.xml 的 packageNames 保持一致 */
         val LAUNCHER_PACKAGES = setOf(
             "com.miui.home",           // 小米 MIUI / HyperOS
@@ -186,16 +189,21 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
             isOrganizing = true
             organizeProgress = 0
             try {
-                val result = facade.organize(
-                    OrganizeSessionContext(
-                        prefs = prefs,
-                        onProgress = { p, m -> reportProgress(p, m) }
+                val result = withTimeout(ORGANIZE_TIMEOUT_MS) {
+                    facade.organize(
+                        OrganizeSessionContext(
+                            prefs = prefs,
+                            onProgress = { p, m -> reportProgress(p, m) }
+                        )
                     )
-                )
+                }
                 reportProgress(100, result.message)
                 organizeCallback?.onComplete(result.success, result.foldersCreated, result.message)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                DiagnosticLogger.error(TAG, "整理超时（超过 ${ORGANIZE_TIMEOUT_MS / 60000} 分钟）")
+                organizeCallback?.onComplete(false, 0, "整理超时，请重试")
             } catch (e: Exception) {
                 DiagnosticLogger.error(TAG, "整理异常: ${e.message}")
                 e.printStackTrace()
@@ -368,11 +376,14 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
             isOrganizing = true
             organizeProgress = 0
             try {
-                val result = organizeByVision()
+                val result = withTimeout(ORGANIZE_TIMEOUT_MS) { organizeByVision() }
                 reportProgress(100, result.message)
                 organizeCallback?.onComplete(result.success, result.foldersCreated, result.message)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                DiagnosticLogger.error(TAG, "视觉整理超时")
+                organizeCallback?.onComplete(false, 0, "视觉整理超时，请重试")
             } catch (e: Exception) {
                 DiagnosticLogger.error(TAG, "视觉整理异常: ${e.message}")
                 e.printStackTrace()

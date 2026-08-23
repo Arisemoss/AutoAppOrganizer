@@ -44,7 +44,6 @@ import java.util.Locale
  *
  * 顶部日期 + 标题 + 副标题 + 渐变分割线；中部圆形可视化；底部悬浮毛玻璃操作卡片。
  */
-@Suppress("UNUSED_PARAMETER")
 @Composable
 fun HomeScreen(
     pendingAppCount: Int,
@@ -143,6 +142,22 @@ fun HomeScreen(
                             text = "分类设置",
                             modifier = Modifier.weight(1f),
                             onClick = onOpenSettings
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // 视觉整理 + 诊断按钮行
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SecondaryOutlineButton(
+                            text = "视觉整理",
+                            modifier = Modifier.weight(1f),
+                            onClick = onVisionOrganize
+                        )
+                        SecondaryOutlineButton(
+                            text = "诊断",
+                            modifier = Modifier.weight(1f),
+                            onClick = onDiagnose
                         )
                     }
                 }

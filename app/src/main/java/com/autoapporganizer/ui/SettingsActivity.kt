@@ -1,6 +1,10 @@
 package com.autoapporganizer.ui
 
+import android.content.Intent
 import android.os.Bundle
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -33,6 +37,7 @@ class SettingsActivity : AppCompatActivity() {
 
         setupSteppers()
         setupSwitch()
+        setupStrategySelector()
         setupDataActions()
     }
 
@@ -74,6 +79,34 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchAutoHome.isChecked = prefs.autoReturnHome
         binding.switchAutoHome.setOnCheckedChangeListener { _, checked ->
             prefs.autoReturnHome = checked
+        }
+    }
+
+    private fun setupStrategySelector() {
+        val strategyKeys = listOf("legacy", "vision", "hybrid")
+        val strategyLabels = listOf(
+            getString(R.string.settings_strategy_legacy),
+            getString(R.string.settings_strategy_vision),
+            getString(R.string.settings_strategy_hybrid)
+        )
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, strategyLabels)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerStrategy.adapter = adapter
+
+        // Set current selection
+        val currentIdx = strategyKeys.indexOf(prefs.organizeStrategy).coerceAtLeast(2) // default to hybrid
+        binding.spinnerStrategy.setSelection(currentIdx)
+
+        binding.spinnerStrategy.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                prefs.organizeStrategy = strategyKeys[position]
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        // VLM config button
+        binding.btnVlmConfig.setOnClickListener {
+            startActivity(Intent(this, VlmConfigActivity::class.java))
         }
     }
 

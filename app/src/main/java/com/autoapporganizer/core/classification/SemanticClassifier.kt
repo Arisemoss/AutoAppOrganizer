@@ -118,11 +118,14 @@ $iconList
             val result = if (screenshot != null) {
                 vlm.analyze(screenshot, prompt)
             } else {
-                // 无截图时，使用纯文本 prompt（部分 VLM 支持纯文本）
-                vlm.analyze(
-                    android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888),
-                    prompt
-                )
+                // 无截图时，创建一个最小的占位 bitmap 用于 VLM 调用
+                // 大多数 VLM 要求传入图片，但分类主要依赖文本 prompt
+                val placeholder = android.graphics.Bitmap.createBitmap(
+                    64, 64, android.graphics.Bitmap.Config.ARGB_8888
+                ).apply {
+                    eraseColor(android.graphics.Color.DKGRAY)
+                }
+                vlm.analyze(placeholder, prompt)
             }
 
             when (result) {

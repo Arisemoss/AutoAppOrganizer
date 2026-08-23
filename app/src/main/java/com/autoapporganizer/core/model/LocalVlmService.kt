@@ -123,10 +123,48 @@ class LocalVlmService(private val prefs: PrefsManager) : VisionModelService {
             if (content.isEmpty()) {
                 return VisionResult.Error("Empty content in response")
             }
-            VisionResult.Success(content, rawResponse = response)
+            // Try to parse detected items from the response text (same logic as CloudVlmService)
+            val items = parseDetectedItems(content)
+            VisionResult.Success(items, rawResponse = response)
         } catch (e: Exception) {
             DiagnosticLogger.error(TAG, "parseResponse failed: ${e.message}")
             VisionResult.Error("Parse error: ${e.message}", e)
         }
+    }
+
+    /**
+     * Extracts the JSON array of detected items from the model's text response.
+     * Tolerates markdown code fences and surrounding prose.
+     */
+    private fun parseDetectedItems(text: String): List<VisionDetectedItem> {
+        val items = mutableListOf<VisionDetectedItem>()
+        try {
+            val start = text.indexOf('[')
+            val end = text.lastIndexOf(']')
+            if (start < 0 || end < 0 || end <= start) {
+                DiagnosticLogger.warn(TAG, "No JSON array found in local VLM response")
+                return items
+            }
+            val json = text.substring(start, end + 1)
+            val array = JsonParser.parseString(json).asJsonArray
+            for (element in array) {
+                try {
+                    val obj = element.asJsonObject
+                    val label = obj.get("label")?.asString
+                        ?: obj.get("name")?.asString ?: "unknown"
+                    val x = obj.get("x")?.asFloat ?: 0f
+                    val y = obj.get("y")?.asFloat ?: 0f
+                    val width = obj.get("width")?.asFloat ?: obj.get("w")?.asFloat ?: 0f
+                    val height = obj.get("height")?.asFloat ?: obj.get("h")?.asFloat ?: 0f
+                    val confidence = obj.get("confidence")?.asFloat ?: 1f
+                    items.add(VisionDetectedItem(label, x, y, width, height, confidence))
+                } catch (e: Exception) {
+                    DiagnosticLogger.warn(TAG, "Skipping malformed item: $element")
+                }
+            }
+        } catch (e: Exception) {
+            DiagnosticLogger.error(TAG, "parseDetectedItems failed: ${e.message}")
+        }
+        return items
     }
 }

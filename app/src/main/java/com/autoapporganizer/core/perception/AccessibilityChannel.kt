@@ -153,8 +153,7 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
                             override fun onFailure(errorCode: Int) {
                                 DiagnosticLogger.error(
                                     TAG,
-                                    "takeScreenshot onFailure errorCode=$errorCode",
-                                    null
+                                    "takeScreenshot onFailure errorCode=$errorCode"
                                 )
                                 if (cont.isActive) cont.resume(null)
                             }

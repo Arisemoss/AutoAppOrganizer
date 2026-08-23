@@ -17,8 +17,11 @@ class HistoryManager(private val context: Context) {
 
     private val type = object : TypeToken<MutableList<OrganizeSession>>() {}.type
 
+    /** Lock for serializing file access across coroutines/threads */
+    private val lock = Any()
+
     /** 读取全部历史，按时间倒序（最新在前） */
-    fun loadAll(): List<OrganizeSession> {
+    fun loadAll(): List<OrganizeSession> = synchronized(lock) {
         if (!file.exists()) return emptyList()
         return try {
             val raw = file.readText()
@@ -32,17 +35,31 @@ class HistoryManager(private val context: Context) {
     }
 
     /** 追加一条会话，自动裁剪到最近 50 条 */
-    fun append(session: OrganizeSession) {
-        val list = loadAll().toMutableList()
+    fun append(session: OrganizeSession) = synchronized(lock) {
+        val list = loadAllInternal().toMutableList()
         list.add(0, session)
         if (list.size > MAX_RECORDS) list.subList(MAX_RECORDS, list.size).clear()
         save(list)
     }
 
     /** 删除指定时间戳的记录 */
-    fun delete(timestamp: Long) {
-        val list = loadAll().filterNot { it.timestamp == timestamp }.toMutableList()
+    fun delete(timestamp: Long) = synchronized(lock) {
+        val list = loadAllInternal().filterNot { it.timestamp == timestamp }.toMutableList()
         save(list)
+    }
+
+    /** Internal load without lock (called from within synchronized blocks) */
+    private fun loadAllInternal(): List<OrganizeSession> {
+        if (!file.exists()) return emptyList()
+        return try {
+            val raw = file.readText()
+            if (raw.isBlank()) emptyList()
+            else gson.fromJson<MutableList<OrganizeSession>>(raw, type)
+                ?: emptyList()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
+        }
     }
 
     /** 清空全部历史 */
