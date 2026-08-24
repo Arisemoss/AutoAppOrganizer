@@ -11,6 +11,12 @@ import java.util.Locale
 /**
  * 诊断日志单例 — 收集无障碍服务运行时诊断信息，
  * 便于排查"无法分析桌面图标"等问题。
+ *
+ * 特性：
+ * - 最多保留 500 条日志（自动裁剪旧条目）
+ * - 支持按级别过滤
+ * - 支持导出完整日志文本
+ * - 线程安全（StateFlow）
  */
 object DiagnosticLogger {
 
@@ -37,6 +43,8 @@ object DiagnosticLogger {
         enum class Level { INFO, WARN, ERROR, DEBUG, SCAN }
     }
 
+    private const val MAX_ENTRIES = 500
+
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
 
@@ -53,12 +61,37 @@ object DiagnosticLogger {
 
     private fun log(level: LogEntry.Level, tag: String, msg: String) {
         val entry = LogEntry(level = level, tag = tag, message = msg)
-        _entries.value = (_entries.value + entry).takeLast(500) // 最多500条
+        _entries.value = (_entries.value + entry).takeLast(MAX_ENTRIES)
     }
 
     fun clear() {
         _entries.value = emptyList()
     }
+
+    /** 设置设备/系统汇总信息 */
+    fun setSummary(summary: String) {
+        _summary.value = summary
+    }
+
+    /** 获取指定级别的日志 */
+    fun getEntriesByLevel(level: LogEntry.Level): List<LogEntry> {
+        return _entries.value.filter { it.level == level }
+    }
+
+    /** 获取最近 N 条日志 */
+    fun getRecent(count: Int): List<LogEntry> {
+        return _entries.value.takeLast(count)
+    }
+
+    /** 获取错误和警告数量 */
+    fun getErrorCount(): Int = _entries.value.count { it.level == LogEntry.Level.ERROR }
+    fun getWarnCount(): Int = _entries.value.count { it.level == LogEntry.Level.WARN }
+
+    /** 检查是否有错误 */
+    fun hasErrors(): Boolean = getErrorCount() > 0
+
+    /** 获取日志总条数 */
+    fun size(): Int = _entries.value.size
 
     /** 获取所有日志文本（用于复制） */
     fun dumpAll(): String {
@@ -68,8 +101,19 @@ object DiagnosticLogger {
         sb.appendLine("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
         sb.appendLine("品牌: ${Build.BRAND}")
         sb.appendLine("Launcher: ${_summary.value}")
+        sb.appendLine("日志条数: ${_entries.value.size}")
+        sb.appendLine("错误数: ${getErrorCount()}, 警告数: ${getWarnCount()}")
         sb.appendLine("=================================")
         _entries.value.forEach { sb.appendLine(it.formatted) }
+        return sb.toString()
+    }
+
+    /** 导出指定时间范围内的日志 */
+    fun dumpSince(sinceTimestamp: Long): String {
+        val filtered = _entries.value.filter { it.timestamp >= sinceTimestamp }
+        val sb = StringBuilder()
+        sb.appendLine("=== 日志 (since ${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(sinceTimestamp))}) ===")
+        filtered.forEach { sb.appendLine(it.formatted) }
         return sb.toString()
     }
 }

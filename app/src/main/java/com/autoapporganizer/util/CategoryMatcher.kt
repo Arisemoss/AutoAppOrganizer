@@ -12,6 +12,12 @@ import java.io.InputStreamReader
  * 主构造器 [CategoryMatcher(Context)] 从应用的 assets 加载 `categories.json`。
  * 测试用的 secondary constructor [CategoryMatcher(InputStream)] 接收任意输入流，
  * 让单元测试可以注入测试 JSON 而无需 Robolectric 或 mock AssetManager。
+ *
+ * 匹配规则：
+ * - 顺序敏感：第一个命中即返回
+ * - 更具体的分类（如「音乐」含 `qqmusic`）必须排在更宽泛的（如「社交」含 `qq`）之前
+ * - 大小写不敏感
+ * - 支持包名和应用名匹配
  */
 class CategoryMatcher private constructor(
     private val context: Context?,
@@ -35,8 +41,10 @@ class CategoryMatcher private constructor(
             val type = object : TypeToken<Map<String, List<String>>>() {}.type
             val result: Map<String, List<String>> = Gson().fromJson(reader, type)
             injectedStream?.close()
+            DiagnosticLogger.info("CategoryMatcher", "Loaded ${result.size} categories, ${result.values.sumOf { it.size }} keywords")
             result
         } catch (e: Exception) {
+            DiagnosticLogger.error("CategoryMatcher", "Failed to load categories: ${e.message}")
             emptyMap()
         }
     }
@@ -72,5 +80,36 @@ class CategoryMatcher private constructor(
      */
     fun getAllCategories(): List<String> {
         return categories.keys.toList() + "其他"
+    }
+
+    /**
+     * 获取分类数量
+     */
+    fun getCategoryCount(): Int = categories.size
+
+    /**
+     * 获取总关键词数量
+     */
+    fun getKeywordCount(): Int = categories.values.sumOf { it.size }
+
+    /**
+     * 获取指定分类的关键词列表
+     */
+    fun getKeywordsForCategory(category: String): List<String> {
+        return categories[category] ?: emptyList()
+    }
+
+    /**
+     * 检查分类是否存在
+     */
+    fun hasCategory(category: String): Boolean {
+        return categories.containsKey(category)
+    }
+
+    /**
+     * 获取所有分类及其关键词数量（用于调试/统计）
+     */
+    fun getCategoryStats(): Map<String, Int> {
+        return categories.mapValues { it.value.size }
     }
 }
