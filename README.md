@@ -1,193 +1,127 @@
-# 桌面整理 - Auto App Organizer
+# 桌面整理 · AutoAppOrganizer
 
-一款帮助你自动整理 Android 桌面的工具应用，支持传统无障碍模式和 AI 视觉模式。
+[![CI](https://github.com/Arisemoss/AutoAppOrganizer/actions/workflows/ci.yml/badge.svg)](https://github.com/Arisemoss/AutoAppOrganizer/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Arisemoss/AutoAppOrganizer)](https://github.com/Arisemoss/AutoAppOrganizer/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+一款自动整理 Android 桌面的工具：扫描桌面图标、智能分类、自动建夹归组。支持**传统无障碍**与**视觉 AI（VLM）**双引擎，整理前自动备份，一键还原。
+
+> 当前版本 **v1.13**（versionCode 5） · minSdk 24 / targetSdk 35 · Kotlin + Jetpack Compose
+
+---
 
 ## 功能特性
 
-- 🔄 **一键自动分类**：自动扫描桌面上的应用图标，按照应用名称智能分类到文件夹
-- 🤖 **AI 视觉分类**：集成 VLM 视觉语言模型（OpenAI/Gemini/GLM），通过截图分析智能分类
-- 📱 **小组件保护**：识别并跳过所有小组件（Widget）、快捷方式，保持桌面布局
-- 📊 **本地分类词库**：内置 200+ 常用应用分类词库，覆盖 16 个分类
-- 🛡️ **备份与还原**：整理前自动备份桌面布局，支持一键撤销
-- ⚡ **三种整理模式**：传统无障碍 / 视觉 AI / 混合增强（推荐）
-- 🔒 **API Key 加密存储**：使用 EncryptedSharedPreferences 保护 VLM API Key
-- 📈 **整理历史**：记录每次整理的详细结果，支持查看历史
-- 🎯 **空间优化**：智能选择拖拽路径，减少整理时间
-- 🔍 **诊断模式**：详细的节点树诊断，方便排查兼容性问题
+- **三种整理模式**：传统无障碍（关键词词库）/ 视觉 AI（截图交给 VLM 语义分类）/ 混合增强（默认，视觉失败自动回退传统）
+- **智能分类**：内置 540+ 关键词词库（15 分类，含中文名与包名片段）；VLM 支持 OpenAI / Gemini / 智谱 GLM / Ollama 本地模型；7 天分类缓存加速二次整理
+- **备份与还原**：三种模式整理前都会自动备份桌面布局；一键解散文件夹还原（按厂商适配「移除热区」位置）
+- **空间优化**：质心锚点对建夹，每步拖拽前按 label+IoU 在最新扫描中重定位图标与文件夹（对抗 Launcher 网格重排）
+- **随时取消**：整理进度页一键取消，协程级安全中断，已建文件夹保留
+- **整理历史**：最近 50 条会话记录（分类统计/文件夹数），可单条删除
+- **诊断模式**：无障碍节点树深度 dump，排查各厂商 Launcher 兼容性
+- **API Key 安全**：EncryptedSharedPreferences 加密存储，旧版明文自动迁移
 
-## 技术实现
-
-### 核心原理
-
-使用 Android 无障碍服务（AccessibilityService）实现：
-
-- 通过 AccessibilityNodeInfo 获取桌面视图节点树
-- 分析节点特征，识别应用图标、小组件、文件夹
-- 使用 GestureDescription 模拟拖拽操作创建文件夹
-- 将同类应用图标拖拽到同一文件夹
-
-### AI 视觉模式
-
-集成 VLM 视觉语言模型进行智能分类：
-
-- 截取桌面截图，发送给 VLM 分析
-- AI 识别应用图标并返回分类建议
-- 高置信度结果直接采用，低置信度回退到关键词匹配
-- 支持 OpenAI GPT-4V、Google Gemini、智谱 GLM-4V
-
-### 项目结构
+## 工作原理
 
 ```
-app/
-├── src/main/
-│   ├── java/com/autoapporganizer/
-│   │   ├── ui/                        # 界面层 (Jetpack Compose)
-│   │   │   ├── MainActivity.kt        # 主界面
-│   │   │   ├── screens/               # 各页面
-│   │   │   │   ├── HomeScreen.kt      # 首页
-│   │   │   │   ├── OrganizingScreen.kt# 整理进度
-│   │   │   │   ├── ResultScreen.kt    # 整理结果
-│   │   │   │   └── BackupScreen.kt    # 备份管理
-│   │   │   └── components/            # 通用组件
-│   │   ├── service/                   # 服务层
-│   │   │   └── AutoAppOrganizerService.kt
-│   │   ├── core/                      # 核心引擎
-│   │   │   ├── action/                # 手势执行
-│   │   │   ├── agent/                 # ReAct Agent 框架
-│   │   │   ├── classification/        # AI 分类 + 融合
-│   │   │   ├── feedback/              # 反馈收集 + 缓存
-│   │   │   ├── layout/                # 空间优化
-│   │   │   ├── model/                 # VLM 服务
-│   │   │   ├── perception/            # 感知融合
-│   │   │   ├── plan/                  # 视觉规划
-│   │   │   ├── prompt/                # Prompt 模板
-│   │   │   └── strategy/              # 策略模式
-│   │   ├── model/                     # 数据模型
-│   │   └── util/                      # 工具类
-│   ├── res/
-│   │   ├── layout/                    # 布局文件
-│   │   ├── values/                    # 资源值
-│   │   └── xml/                       # 服务配置
-│   └── assets/
-│       ├── categories.json            # 分类词库 (200+ 应用)
-│       └── prompts/                   # AI Prompt 模板
-├── src/test/                          # 单元测试
-│   └── java/com/autoapporganizer/
-│       ├── core/
-│       │   ├── action/                # 手势测试
-│       │   ├── agent/                 # Agent 测试
-│       │   ├── classification/        # 分类测试
-│       │   ├── feedback/              # 反馈测试
-│       │   ├── layout/                # 布局优化测试
-│       │   ├── perception/            # 感知测试
-│       │   └── plan/                  # 规划测试
-│       └── util/                      # 工具测试
-└── docs/                              # 文档
+无障碍节点树 + 截图
+  → 感知融合（无障碍元素 ⊕ VLM 检测，空间匹配去重）
+  → 分类（缓存 → AI 语义 → 关键词词库 → 小类并入"其他"）
+  → ReAct 循环（感知 → 规划 → 手势 → 观测，状态机 scan/drag/next/done）
+  → GestureExecutor 派发长按+拖拽手势 → Launcher 建夹归组
 ```
 
-## 使用说明
+- **传统模式**：纯节点树识别（尺寸窗 + clickable + label 启发式），包名经 PackageManager 反查后走词库
+- **视觉模式**：截图（API 30+，HardwareBuffer → Bitmap）压缩后交 VLM，返回图标坐标与分类建议，与节点树融合
+- **混合模式**：视觉成功即采用（含部分成功）；失败且未建夹才回退传统
 
-### 基本使用
+## UI（Aurora Glass 设计系统）
 
-1. **安装应用**：在 Android 设备上安装本应用
-2. **启用服务**：在系统设置 → 无障碍 → 找到"桌面整理"并启用
-3. **开始整理**：返回应用，点击圆形按钮开始整理
-4. **完成！**：桌面应用图标已自动分类到文件夹
+深空底色 + 极光渐变（紫→青）+ 玻璃卡片（半透明面板 + 细描边）。
 
-### AI 视觉模式
+- **间距**：4dp 基准刻度（`theme/Spacing.kt`：4/8/12/16/20/24/32）
+- **自适应**：三档断点（<600dp 手机单列 / 600–840dp 居中限宽 / >840dp 双栏，上限 1100dp）
+- **五屏**：首页（Hero+统计+入口）/ 整理进度（进度环+轨道动画+**取消**）/ 结果 / 备份与历史 / 权限指南
+- **组件库**：`components/AuroraComponents.kt`（GlassCard / AuroraButton / ProgressRing / StatusBadge / StatChip 等）
+- 状态经 `rememberSaveable` 持久化，旋转不丢；服务回调生命周期安全注册
 
-1. 进入设置 → 整理策略 → 选择"混合增强"或"视觉 AI"
-2. 点击"模型配置"，输入 VLM API Key（支持 OpenAI/Gemini/GLM）
-3. 返回首页，点击"视觉整理"按钮
+## 项目结构
 
-### 诊断模式
+```
+app/src/main/java/com/autoapporganizer/
+├── core/
+│   ├── action/          # 手势执行（GestureExecutor：长按+拖拽单笔划、边缘内缩）
+│   ├── agent/           # ReAct 循环（AgentRunner）与任务状态机（AgentTask/TaskState）
+│   ├── classification/  # VLM 语义分类器 + 关键词融合
+│   ├── feedback/        # 分类缓存（7 天 TTL）与反馈统计
+│   ├── layout/          # 空间优化（质心锚点、拖拽序列）
+│   ├── model/           # VLM 服务（OpenAI/Gemini/GLM/本地）+ 图片压缩编码器
+│   ├── perception/      # 无障碍通道、视觉通道、感知融合
+│   └── strategy/        # 整理策略（Legacy/Vision/Hybrid）
+├── service/             # 无障碍服务入口与整理编排
+├── task/organize/       # 桌面整理任务状态机
+├── ui/                  # Compose 五屏 + 组件 + 主题（Aurora Glass）
+├── model/               # 数据模型（DesktopItem/DesktopBackup/OrganizeSession）
+└── util/                # 备份/历史/词库/诊断/偏好
+app/src/test/            # 14 个测试类、108 个用例
+```
 
-如果整理不工作，可以使用诊断模式排查：
+## 快速开始
 
-1. 点击首页的"诊断"按钮
-2. 查看详细的节点树信息
-3. 根据诊断信息调整设置
+1. 安装 [最新 Release](https://github.com/Arisemoss/AutoAppOrganizer/releases) 的 APK
+2. 首页 →「权限指南」，依次开启：
+   - **无障碍服务**（必需，读取图标 + 派发手势）
+   - **悬浮窗**（Android 15 与小米设备必需）
+   - **使用统计**（可选，启用「不常用」分类）
+3. 视觉 AI 模式需在设置中配置 VLM（Provider + API Key）
+4. 回到桌面 → 开始整理。整理过程请停留在桌面；进度页可随时取消
+5. 不满意？「备份与历史」→ 还原桌面布局
 
-## 分类词库
+## 构建与测试
 
-内置 16 个分类，覆盖 200+ 常用应用：
-
-| 分类 | 示例应用                    |
-| -- | ----------------------- |
-| 社交 | 微信、QQ、微博、钉钉、Telegram    |
-| 购物 | 淘宝、京东、拼多多、闲鱼、亚马逊        |
-| 视频 | 抖音、快手、B站、爱奇艺、Netflix    |
-| 音乐 | QQ音乐、网易云音乐、Spotify、喜马拉雅 |
-| 游戏 | 王者荣耀、原神、和平精英、Steam      |
-| 出行 | 高德地图、滴滴、携程、12306        |
-| 阅读 | 微信读书、Kindle、知乎、小红书      |
-| 金融 | 支付宝、银行、证券、数字货币          |
-| 工具 | 计算器、天气、文件管理、密码管理        |
-| 系统 | 设置、相机、电话、应用商店           |
-| 学习 | 慕课、得到、Duolingo、LeetCode |
-| 健康 | Keep、运动、医疗健康            |
-| 摄影 | 相机、剪辑、修图                |
-| 生活 | 外卖、快递、招聘、房产             |
-| 亲子 | 宝宝巴士、儿童教育               |
-
-## 开发环境要求
-
-- Android Studio Hedgehog | 2023.1.1+
-- JDK 17+
-- Android SDK API 24+ (Android 7.0)
-- Kotlin 1.9.0+
-
-## 编译构建
+要求：**JDK 17**、**Android SDK 35**。
 
 ```bash
-# Debug 版本
-./gradlew assembleDebug
+# Debug APK
+./gradlew :app:assembleDebug
 
-# Release 版本
-./gradlew assembleRelease
+# 单元测试（当前 108 例：99 通过，9 个既有断言漂移见下）
+./gradlew :app:testDebugUnitTest
 
-# 运行单元测试
-./gradlew testDebugUnitTest
+# Release APK（未签名）
+./gradlew :app:assembleRelease
 ```
 
-## 架构设计
+> ⚠️ **两个 Windows 构建坑（血泪教训）**
+> 1. 项目路径必须**纯 ASCII**——AGP 对中文路径的路径检查可跳过（`android.overridePathCheck=true`），但单元测试 worker 的 classpath 编码仍会炸（全部 ClassNotFound）。
+> 2. `local.properties` 的 `sdk.dir` 必须写**正斜杠**（`D:/sdk/android-sdk`）——单反斜杠会被 properties 转义规则吃掉，报"文件名、目录名或卷标语法不正确"。
 
-### 策略模式
+## CI/CD
 
-应用支持三种整理策略，通过 `OrganizerFacade` 统一管理：
+| 工作流 | 触发 | 内容 |
+|---|---|---|
+| `ci.yml`（CI） | push main / PR / tag | 单测 + debug/release APK 构建，报告与 APK 工件上传 |
+| `release.yml`（Release） | tag `v*` | 单测 + 构建 + 自动创建 GitHub Release 并附 APK |
+| `deploy-pages.yml` | push（docs/**） | 文档页部署 |
 
-- **LegacyStrategy**：纯无障碍模式，不依赖网络
-- **VisionStrategy**：纯 AI 视觉模式，需要 VLM API
-- **HybridStrategy**：混合模式，AI 优先 + 无障碍兜底（推荐）
+发版流程：合并到 main → `git tag v1.x && git push origin v1.x` → Release 自动生成（附 APK）。也支持 `gh release create` 手动发。
 
-### ReAct Agent 框架
+## 测试现状与已知限制
 
-视觉模式使用 ReAct（Reason-Act）循环：
+**测试**：108 用例中 99 通过。9 个失败均为仓库历史遗留的断言/实现漂移（修复前 HEAD 连编译都无法通过，测试从未真正运行过）：
 
-1. **Perceive**：扫描桌面（无障碍 + 可选 VLM）
-2. **Reason**：决定下一步操作
-3. **Act**：执行手势操作
-4. **Observe**：观察结果，更新状态
+- `ClassificationFusionTest` ×5：测试假设单元素分类存活，实现遵循 AI prompt 契约（"单应用归其他"）——需把断言改为「其他」
+- `SpatialClustererTest` ×2：`optimizeDragSequence` 步数断言（3→2，与 DragOptimizer 契约一致）；`findAnchorPair` 语义（实现返回"质心最近+离锚点最近"，测试期望"质心最近两个"）
+- `CategoryMatcherTest` ×2：测试用手写内联词库，缺 `抖音/aweme`、`淘宝/taobao` 等词（生产词库 `assets/categories.json` 已补）
 
-### 感知融合
+**已知限制**：
 
-融合多源感知数据：
-
-- AccessibilityChannel：无障碍节点树
-- VisionChannel：VLM 视觉分析
-- PerceptionFusion：合并去重，提升准确性
-
-## 注意事项
-
-⚠️ **重要提示**：
-
-- 本应用需要无障碍服务权限才能工作
-- 不同厂商的桌面 Launcher 实现可能有差异
-- 整理前会自动备份，但建议重要布局先手动截图
-- 本应用不收集任何个人数据，所有操作在本地完成
-- AI 视觉模式需要网络连接和 VLM API Key
-- API Key 使用加密存储，不会泄露
+- Launcher 兼容性依赖 `accessibility_service_config.xml` 的包名白名单（内置 14 个主流桌面），第三方 Launcher 可能收不到事件
+- VLM 返回的坐标被直接信任（无缩放校验），个别模型输出归一化坐标时会整体错位
+- 整理过程无前台服务/通知兜底，熄屏或被杀后中断无恢复
+- `allowBackup="true"` 会使加密 prefs 进云备份，恢复设备上可能触发明文回退路径
+- 「不常用」分类依赖用户手动授予使用统计权限，目前仅指南页引导
 
 ## 许可证
 
-本项目仅供学习和个人使用。
+[MIT](LICENSE) © 2025 Arisemoss
