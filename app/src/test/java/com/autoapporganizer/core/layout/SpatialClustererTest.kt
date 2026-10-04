@@ -77,10 +77,11 @@ class SpatialClustererTest {
         )
         val (anchor, second) = SpatialClusterer.findAnchorPair(elements)
 
-        // Anchor should be closest to centroid
-        assertEquals(1, anchor) // Center
-        // Second should be closest to anchor
-        assertEquals(2, second) // Near
+        // Element centers: Far1(40,40) Center(240,240) Near(260,260) Far2(540,540)
+        // → centroid (270,270). Near is closest to the centroid (~14px),
+        // Center second-closest (~42px) — and also closest to the anchor.
+        assertEquals(2, anchor) // Near
+        assertEquals(1, second) // Center
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -103,12 +104,11 @@ class SpatialClustererTest {
         )
         val steps = SpatialClusterer.optimizeDragSequence(elements)
 
-        // Should have 3 steps: create folder + 2 drags
+        // Contract: 1 folder-creation step + (n-2) drag-into steps = n-1 = 2
         assertEquals(2, steps.size)
         // First step is folder creation
         assertTrue(steps[0].isFolderCreation)
         // Remaining steps are not folder creation
         assertFalse(steps[1].isFolderCreation)
-        assertFalse(steps[2].isFolderCreation)
     }
 }

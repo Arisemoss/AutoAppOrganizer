@@ -25,12 +25,12 @@ class CategoryMatcherTest {
      */
     private val realisticJson = """
         {
-          "音乐": ["qqmusic", "netease.cloudmusic", "music"],
-          "视频": ["tiktok", "douyin", "bilibili"],
+          "音乐": ["qqmusic", "netease.cloudmusic", "music", "网易云音乐"],
+          "视频": ["tiktok", "douyin", "aweme", "bilibili", "抖音"],
           "游戏": ["game", "tencent.tmgp", "mihoyo"],
-          "社交": ["wechat", "tencent.mm", "tencent.mobileqq", "qq"],
-          "购物": ["taobao", "jingdong", "pinduoduo"],
-          "工具": ["calculator", "calendar", "clock", "settings"],
+          "社交": ["wechat", "tencent.mm", "tencent.mobileqq", "qq", "微信"],
+          "购物": ["taobao", "淘宝", "jingdong", "pinduoduo"],
+          "工具": ["calculator", "计算器", "calendar", "clock", "settings"],
           "系统": ["设置", "相机"]
         }
     """.trimIndent()
