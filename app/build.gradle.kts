@@ -12,8 +12,8 @@ android {
         applicationId = "com.autoapporganizer"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.12"
+        versionCode = 5
+        versionName = "1.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
