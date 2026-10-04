@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle (with cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Create GitHub Release with APK
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/debug/app-debug.apk
+          generate_release_notes: true
+          body: |
+            ## 桌面整理 v${{ github.ref_name }}
+
+            **主要更新（1.11 → 1.12）**
+
+            ### 修复
+            - 修复编译阻断：SemanticClassifier / GestureExecutor 截图回调（ScreenshotResult 现按 HardwareBuffer 处理）
+            - 修复传统模式词库整体失效（无障碍节点包名为桌面包名 → 按 PackageManager 反查真实包名）
+            - 修复视觉路径：整理前自动备份 + 写入整理历史；备份失败有告警
+            - 修复 AgentRunner：移除无效的循环级 VLM 调用（省配额）、步数耗尽不再误报成功、取消正确传播
+            - 修复锚点索引错位与拖拽坐标陈旧：每步按 label+IoU 重定位图标与文件夹
+            - 修复超时分支不可达（catch 顺序）、用户取消无回调、pre-O 拖拽假成功
+            - 截图上传压缩（长边 1280 / JPEG 80），大幅降低流量与 token 消耗
+            - 手势边界 8px 内缩，避免误触系统边缘手势
+
+            ### UI 重构（Aurora Glass 设计系统）
+            - 新增间距刻度 / 自适应断点 / 玻璃组件库
+            - 五屏重写：首页 / 整理进度（新增取消按钮）/ 结果 / 备份与历史（诚实语义）/ 权限指南
+            - 手机单列、平板居中限宽、桌面双栏自适应；旋转不再丢状态
+
+            ### 工程
+            - GitHub Actions CI：单元测试 + APK 构建；打 tag 自动发布 Release 并附带 APK
