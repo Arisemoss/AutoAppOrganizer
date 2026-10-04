@@ -1,16 +1,15 @@
 package com.autoapporganizer.core.strategy
 
 import com.autoapporganizer.util.DiagnosticLogger
+import kotlinx.coroutines.CancellationException
 
 /**
  * Hybrid strategy: try the vision-driven organizer first, and fall back to the
- * legacy accessibility organizer if the vision model is unavailable or fails
- * repeatedly.
+ * legacy accessibility organizer if the vision model is unavailable or fails.
  */
 class HybridStrategy(
     private val visionOrganizer: VisionOrganizer,
-    private val legacyOrganizer: LegacyOrganizer,
-    private val maxVisionFailures: Int = 2
+    private val legacyOrganizer: LegacyOrganizer
 ) : OrganizeStrategy {
 
     companion object {
@@ -23,13 +22,19 @@ class HybridStrategy(
     override suspend fun organize(context: OrganizeSessionContext): StrategyResult {
         context.onProgress(5, "正在尝试视觉 AI 模式…")
 
-        val visionResult = runCatching { visionOrganizer.organizeByVision() }
-            .getOrElse { e ->
-                DiagnosticLogger.error(TAG, "Vision organizer crashed: ${e.message}")
-                StrategyResult(false, "视觉模块异常：${e.message}", 0, 0)
-            }
+        // runCatching 会连 CancellationException 一起吞掉：5 分钟总超时触发时，
+        // 视觉路径的取消会先被转成 legacy 回退而不是立即终止。显式放行取消。
+        val visionResult = try {
+            visionOrganizer.organizeByVision()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DiagnosticLogger.error(TAG, "Vision organizer crashed: ${e.message}")
+            StrategyResult(false, "视觉模块异常：${e.message}", 0, 0)
+        }
 
-        return if (visionResult.success || shouldUseResult(visionResult)) {
+        // 保留建出过文件夹的部分成果；否则回退 legacy 整理。
+        return if (visionResult.success || visionResult.foldersCreated > 0) {
             visionResult
         } else {
             DiagnosticLogger.warn(
@@ -40,11 +45,4 @@ class HybridStrategy(
             legacyOrganizer.organizeDesktop()
         }
     }
-
-    /**
-     * Heuristic: keep the vision result if it created folders, even if it reported
-     * partial failure; otherwise trust the success flag.
-     */
-    private fun shouldUseResult(result: StrategyResult): Boolean =
-        result.success || result.foldersCreated > 0
 }

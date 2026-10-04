@@ -1,6 +1,5 @@
 package com.autoapporganizer.core.agent
 
-import com.autoapporganizer.core.model.VisionResult
 import com.autoapporganizer.core.perception.AccessibilityChannel
 import com.autoapporganizer.core.perception.ScreenElement
 import com.autoapporganizer.core.perception.VisionChannel
@@ -53,24 +52,13 @@ interface AgentTask {
     suspend fun describe(accessibility: AccessibilityChannel, vision: VisionChannel): String
 
     /** Decide the next [com.autoapporganizer.core.action.Action] based on state and perception. */
-    suspend fun reason(state: TaskState, perception: List<ScreenElement>, visionResult: VisionResult?): com.autoapporganizer.core.action.Action
+    suspend fun reason(state: TaskState, perception: List<ScreenElement>): com.autoapporganizer.core.action.Action
 
     /** Update state after an action was executed. */
     suspend fun observe(action: com.autoapporganizer.core.action.Action, result: Boolean, state: TaskState): TaskState
 
     /** Check if the task is complete. */
     fun isComplete(state: TaskState): Boolean
-
-    /**
-     * Whether the next reason() iteration needs a fresh VLM pass for [state].
-     *
-     * Default is `false`: most steps only need the accessibility tree, and the
-     * caller ([AgentRunner]) may reuse the most recent [VisionResult] when this
-     * returns `false`. Tasks that genuinely need a vision pass (e.g. an initial
-     * icon scan or locating a newly-created folder) should override and return
-     * `true` for the relevant phase.
-     */
-    fun needsVision(state: TaskState): Boolean = false
 
     /** Get number of folders created (for reporting). */
     fun getFoldersCreated(): Int

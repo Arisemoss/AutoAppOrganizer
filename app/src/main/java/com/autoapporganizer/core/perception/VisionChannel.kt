@@ -81,10 +81,13 @@ class VisionChannelImpl(
             is VisionResult.Success -> {
                 DiagnosticLogger.debug(TAG, "scan: VLM detected ${result.elements.size} item(s)")
                 result.elements.mapIndexed { index, item ->
+                    // VLM 坐标偶尔给出 left > right 或零尺寸：负宽 Rect 会让交集
+                    // 计算（PerceptionFusion.intersectionArea）与尺寸过滤全部静默
+                    // 失效，这里先把四条边归一化再入列。
                     val left = item.x.toInt()
                     val top = item.y.toInt()
-                    val right = (item.x + item.width).toInt()
-                    val bottom = (item.y + item.height).toInt()
+                    val right = maxOf(left, (item.x + item.width).toInt())
+                    val bottom = maxOf(top, (item.y + item.height).toInt())
                     ScreenElement(
                         id = "vision_$index",
                         label = item.label,

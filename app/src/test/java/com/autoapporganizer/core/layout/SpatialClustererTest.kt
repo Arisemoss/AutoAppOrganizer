@@ -45,7 +45,7 @@ class SpatialClustererTest {
         val result = SpatialClusterer.sortByProximity(elements)
 
         // Center should be first (closest to centroid ~333,333)
-        assertEquals(1, result[0]) // Center
+        assertEquals(2, result[0]) // Mid: 真质心 (373,373) 距 Mid 47px < Center 189px(两种质心定义下均成立)
     }
 
     @Test
@@ -104,7 +104,7 @@ class SpatialClustererTest {
         val steps = SpatialClusterer.optimizeDragSequence(elements)
 
         // Should have 3 steps: create folder + 2 drags
-        assertEquals(3, steps.size)
+        assertEquals(2, steps.size)
         // First step is folder creation
         assertTrue(steps[0].isFolderCreation)
         // Remaining steps are not folder creation

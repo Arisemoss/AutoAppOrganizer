@@ -2,28 +2,34 @@ package com.autoapporganizer.core.agent
 
 import com.autoapporganizer.core.action.Action
 import com.autoapporganizer.core.action.GestureEngine
-import com.autoapporganizer.core.model.VisionResult
 import com.autoapporganizer.core.perception.AccessibilityChannel
 import com.autoapporganizer.core.perception.VisionChannel
 import com.autoapporganizer.util.DiagnosticLogger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 /**
- * Runs an [AgentTask] through a Reason-Act (ReAct) loop.
+ * Runs an [AgentTask] through a Reason-Act loop.
  *
  * Each iteration:
- *  1. Scans the accessibility tree for the current perception.
- *  2. Optionally queries the vision channel (if a VLM is available).
- *  3. Asks the task to [AgentTask.reason] about the next action.
- *  4. Executes the action via [GestureEngine].
- *  5. Lets the task [AgentTask.observe] the result and update state.
+ *  1. Scans the accessibility tree for a fresh perception (launchers re-grid icons
+ *     after every drop, so only the latest scan reflects the true layout).
+ *  2. Asks the task to [AgentTask.reason] about the next action.
+ *  3. Executes the action via [GestureEngine].
+ *  4. Lets the task [AgentTask.observe] the result and update state.
  *
- * The loop terminates when the task signals completion, when [AgentTask.maxSteps]
- * is reached, or when the action is [Action.Complete].
+ * The loop terminates when the task signals [Action.Complete], when
+ * [AgentTask.isComplete] returns true, or when [AgentTask.maxSteps] is reached.
+ *
+ * Note: no VLM calls happen inside the loop. The single meaningful vision pass
+ * (icon detection + classification) runs in [AgentTask.describe]; a per-step
+ * "state description" call used to exist here but nothing consumed its result,
+ * so it only burned API quota. Reintroduce loop-level vision only together with
+ * a consumer that actually acts on the coordinates.
  *
  * @param engine             Translates actions into accessibility gestures.
  * @param perceptionChannel  Accessibility-based perception source.
- * @param visionChannel      Vision-based perception source (VLM).
+ * @param visionChannel      Vision-based perception source (used by describe only).
  */
 class AgentRunner(
     private val engine: GestureEngine,
@@ -34,16 +40,8 @@ class AgentRunner(
     companion object {
         private const val TAG = "AgentRunner"
 
-        /** Delay between ReAct iterations to let the UI settle (ms). */
+        /** Delay between iterations to let the UI settle (ms). */
         private const val STEP_SETTLE_MS = 500L
-
-        /**
-         * Minimum number of steps between two fresh VLM calls when [AgentTask.needsVision]
-         * returns `true`. Even when the task asks for vision on consecutive steps, we reuse
-         * the most recent [VisionResult] within this window to avoid hammering the cloud
-         * model on rapid iterations where the screen has not meaningfully changed.
-         */
-        private const val VISION_REUSE_WINDOW = 3
     }
 
     /**
@@ -56,60 +54,20 @@ class AgentRunner(
         DiagnosticLogger.info(TAG, "Task description: $description")
 
         var state = TaskState()
-        val visionAvailable = runCatching { visionChannel.isAvailable() }.getOrElse { false }
-        if (!visionAvailable) {
-            DiagnosticLogger.warn(TAG, "Vision channel not available; running in accessibility-only mode")
-        }
-
-        // Cache of the most recent VLM result, plus the step at which it was produced.
-        // Reused when the task does not require a fresh pass (needsVision == false) or
-        // when the previous pass is still within [VISION_REUSE_WINDOW] steps.
-        var cachedVision: VisionResult? = null
-        var cachedVisionStep: Int = Int.MIN_VALUE
+        var completed = false
 
         try {
             while (state.step < task.maxSteps) {
                 // ── Perceive ──────────────────────────────────────────────
                 val perception = perceptionChannel.scanElements()
 
-                // Decide whether this step actually needs a fresh VLM pass.
-                // - Task says it doesn't need vision  → reuse cache (no cloud call)
-                // - Task says it needs vision, but the last pass is recent → reuse cache
-                // - Otherwise → make a fresh cloud call
-                val needsFreshVision = visionAvailable &&
-                    task.needsVision(state) &&
-                    (state.step - cachedVisionStep) >= VISION_REUSE_WINDOW
-
-                val visionResult: VisionResult? = if (needsFreshVision) {
-                    try {
-                        visionChannel.analyze("Describe the current screen state briefly.")
-                    } catch (e: Exception) {
-                        DiagnosticLogger.warn(TAG, "Vision analyze failed (non-fatal): ${e.message}")
-                        null
-                    }
-                } else {
-                    // Reuse the cached result (may be null if no pass has run yet).
-                    if (cachedVision != null) {
-                        DiagnosticLogger.debug(
-                            TAG,
-                            "Vision reuse: skipping VLM call at step ${state.step + 1} " +
-                                "(last pass at ${cachedVisionStep + 1}, needsVision=${task.needsVision(state)})"
-                        )
-                    }
-                    cachedVision
-                }
-
-                if (needsFreshVision && visionResult != null) {
-                    cachedVision = visionResult
-                    cachedVisionStep = state.step
-                }
-
                 // ── Reason ────────────────────────────────────────────────
-                val action = task.reason(state, perception, visionResult)
+                val action = task.reason(state, perception)
                 DiagnosticLogger.info(TAG, "Step ${state.step + 1}: ${action.describe()}")
 
                 if (action is Action.Complete) {
                     DiagnosticLogger.info(TAG, "Task signalled completion")
+                    completed = true
                     break
                 }
 
@@ -119,31 +77,39 @@ class AgentRunner(
                 // ── Observe ───────────────────────────────────────────────
                 state = task.observe(action, success, state)
 
-                val progress = calculateProgress(state, task)
-                onProgress(progress, "步骤 ${state.step}: ${action.describe()}")
+                onProgress(calculateProgress(state, task), "步骤 ${state.step}: ${action.describe()}")
 
                 if (task.isComplete(state)) {
                     DiagnosticLogger.info(TAG, "Task isComplete() returned true at step ${state.step}")
+                    completed = true
                     break
                 }
 
                 delay(STEP_SETTLE_MS)
             }
 
-            val complete = task.isComplete(state) || state.step >= task.maxSteps
-            val msg = if (state.errors.isNotEmpty()) {
-                "完成（${state.errors.size} 个错误）"
-            } else {
-                "完成"
+            // Reaching maxSteps without the task completing is a failure, not a
+            // success: previously `step >= maxSteps` was OR-ed into the completed
+            // check and half-finished runs were reported as done.
+            val exhausted = !completed && state.step >= task.maxSteps
+            val msg = when {
+                exhausted -> "已达最大步数（${task.maxSteps}），整理未全部完成"
+                state.errors.isNotEmpty() -> "完成（${state.errors.size} 个错误）"
+                else -> "完成"
             }
-            DiagnosticLogger.info(TAG, "=== AgentRunner finished: $msg (steps=${state.step}, folders=${task.getFoldersCreated()}) ===")
+            DiagnosticLogger.info(
+                TAG,
+                "=== AgentRunner finished: $msg (steps=${state.step}, folders=${task.getFoldersCreated()}) ==="
+            )
 
             return AgentResult(
-                success = complete && state.errors.isEmpty(),
+                success = completed && state.errors.isEmpty(),
                 message = msg,
                 stepsExecuted = state.step,
                 foldersCreated = task.getFoldersCreated()
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             DiagnosticLogger.error(TAG, "AgentRunner crashed: ${e.message}")
             return AgentResult(

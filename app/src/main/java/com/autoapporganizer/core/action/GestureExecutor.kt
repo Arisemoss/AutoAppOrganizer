@@ -34,7 +34,13 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
         private const val DEFAULT_DRAG_MS = 800L
         private const val DEFAULT_SWIPE_MS = 300L
         private const val SETTLE_MS = 120L
-        private const val INVALID = -1
+
+        /**
+         * Inset (px) applied when clamping gesture points to the screen. Pressing
+         * exactly on the screen edge triggers system edge gestures (back, notification
+         * shade) instead of the intended icon interaction.
+         */
+        private const val EDGE_INSET_PX = 8
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -54,11 +60,10 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
         if (root != null) {
             val bounds = Rect()
             root.getBoundsInScreen(bounds)
+            root.recycle()
             if (bounds.width() > 0 && bounds.height() > 0) {
-                root.recycle()
                 return bounds
             }
-            root.recycle()
         }
 
         val metrics = DisplayMetrics()
@@ -69,23 +74,19 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
     }
 
     /**
-     * Clamp coordinates to the screen bounds and ensure they are not negative.
-     * Out-of-bounds gestures would silently fail or hit the wrong screen edge.
+     * Clamp coordinates into the screen bounds with a small edge inset.
+     * Resolved once per gesture so all points of the same gesture are clamped
+     * against the same bounds even if the active window changes mid-gesture.
      */
-    private fun clampToScreen(x: Float, y: Float): Pair<Float, Float> {
-        val bounds = resolveScreenBounds()
-        val maxX = max(bounds.left, bounds.right - 1).toFloat()
-        val maxY = max(bounds.top, bounds.bottom - 1).toFloat()
-        val minX = bounds.left.toFloat()
-        val minY = bounds.top.toFloat()
-        return Pair(
-            min(maxX, max(minX, x)),
-            min(maxY, max(minY, y))
-        )
+    private fun clampToScreen(x: Float, y: Float, bounds: Rect): Pair<Float, Float> {
+        val minX = (bounds.left + EDGE_INSET_PX).toFloat()
+        val minY = (bounds.top + EDGE_INSET_PX).toFloat()
+        val maxX = max(minX, (bounds.right - 1 - EDGE_INSET_PX).toFloat()).toFloat()
+        val maxY = max(minY, (bounds.bottom - 1 - EDGE_INSET_PX).toFloat()).toFloat()
+        return Pair(min(maxX, max(minX, x)), min(maxY, max(minY, y)))
     }
 
-    private fun isWithinScreen(x: Float, y: Float): Boolean {
-        val bounds = resolveScreenBounds()
+    private fun isWithinScreen(x: Float, y: Float, bounds: Rect): Boolean {
         return x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom
     }
 
@@ -113,20 +114,22 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
     }
 
     override suspend fun performClick(x: Float, y: Float): Boolean {
-        if (!isWithinScreen(x, y)) {
-            DiagnosticLogger.warn(TAG, "Click out of bounds: ($x,$y), screen=${screenWidth}x$screenHeight")
+        val bounds = resolveScreenBounds()
+        if (!isWithinScreen(x, y, bounds)) {
+            DiagnosticLogger.warn(TAG, "Click out of bounds: ($x,$y), screen=${bounds.width()}x${bounds.height()}")
         }
-        val (cx, cy) = clampToScreen(x, y)
+        val (cx, cy) = clampToScreen(x, y, bounds)
         val path = Path().apply { moveTo(cx, cy) }
         val stroke = GestureDescription.StrokeDescription(path, 0, DEFAULT_CLICK_MS)
         return dispatchGesture(stroke, "Click($cx,$cy)")
     }
 
     override suspend fun performLongPress(x: Float, y: Float, durationMs: Long): Boolean {
-        if (!isWithinScreen(x, y)) {
+        val bounds = resolveScreenBounds()
+        if (!isWithinScreen(x, y, bounds)) {
             DiagnosticLogger.warn(TAG, "LongPress out of bounds: ($x,$y)")
         }
-        val (cx, cy) = clampToScreen(x, y)
+        val (cx, cy) = clampToScreen(x, y, bounds)
         val path = Path().apply { moveTo(cx, cy) }
         val stroke = GestureDescription.StrokeDescription(path, 0, max(durationMs, DEFAULT_CLICK_MS))
         return dispatchGesture(stroke, "LongPress($cx,$cy,$durationMs)")
@@ -138,43 +141,35 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
         durationMs: Long
     ): Boolean = performDrag(fromX, fromY, toX, toY, DEFAULT_HOLD_MS, durationMs)
 
+    /**
+     * Long-press + drag in a single stroke: the pointer presses down at the start
+     * point when the stroke begins, holds for [holdMs] (the stroke start time), then
+     * travels to the target over [dragMs] and lifts. This works identically on
+     * API 24+ — the previous pre-O "two independent strokes" fallback could never
+     * move an icon (press and move were separate gestures) yet reported success.
+     */
     override suspend fun performDrag(
         fromX: Float, fromY: Float,
         toX: Float, toY: Float,
         holdMs: Long, dragMs: Long
     ): Boolean {
-        if (!isWithinScreen(fromX, fromY) || !isWithinScreen(toX, toY)) {
+        val bounds = resolveScreenBounds()
+        if (!isWithinScreen(fromX, fromY, bounds) || !isWithinScreen(toX, toY, bounds)) {
             DiagnosticLogger.warn(TAG, "Drag out of bounds: ($fromX,$fromY)->($toX,$toY)")
         }
-        val (fx, fy) = clampToScreen(fromX, fromY)
-        val (tx, ty) = clampToScreen(toX, toY)
+        val (fx, fy) = clampToScreen(fromX, fromY, bounds)
+        val (tx, ty) = clampToScreen(toX, toY, bounds)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val path = Path().apply {
-                moveTo(fx, fy)
-                lineTo(tx, ty)
-            }
-            val pressMs = max(holdMs, 0)
-            val moveMs = max(dragMs, 100L)
-            val stroke = GestureDescription.StrokeDescription(path, pressMs, moveMs, true)
-            val result = dispatchGesture(stroke, "Drag($fx,$fy->$tx,$ty h=${pressMs}ms d=${moveMs}ms)")
-            kotlinx.coroutines.delay(SETTLE_MS)
-            return result
-        }
-
-        // Fallback for pre-O: dispatch two separate strokes.
-        val pressPath = Path().apply { moveTo(fx, fy) }
-        val press = GestureDescription.StrokeDescription(pressPath, 0, holdMs)
-        val movePath = Path().apply {
+        val pressMs = max(holdMs, 0)
+        val moveMs = max(dragMs, 100L)
+        val path = Path().apply {
             moveTo(fx, fy)
             lineTo(tx, ty)
         }
-        val move = GestureDescription.StrokeDescription(movePath, 0, max(dragMs, 100L))
-        val pressOk = dispatchGesture(press, "Drag-press($fx,$fy)")
+        val stroke = GestureDescription.StrokeDescription(path, pressMs, moveMs)
+        val result = dispatchGesture(stroke, "Drag($fx,$fy->$tx,$ty h=${pressMs}ms d=${moveMs}ms)")
         kotlinx.coroutines.delay(SETTLE_MS)
-        val moveOk = dispatchGesture(move, "Drag-move($fx,$fy->$tx,$ty)")
-        kotlinx.coroutines.delay(SETTLE_MS)
-        return pressOk && moveOk
+        return result
     }
 
     private suspend fun performSwipe(
@@ -182,11 +177,12 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
         toX: Float, toY: Float,
         durationMs: Long
     ): Boolean {
-        if (!isWithinScreen(fromX, fromY) || !isWithinScreen(toX, toY)) {
+        val bounds = resolveScreenBounds()
+        if (!isWithinScreen(fromX, fromY, bounds) || !isWithinScreen(toX, toY, bounds)) {
             DiagnosticLogger.warn(TAG, "Swipe out of bounds: ($fromX,$fromY)->($toX,$toY)")
         }
-        val (fx, fy) = clampToScreen(fromX, fromY)
-        val (tx, ty) = clampToScreen(toX, toY)
+        val (fx, fy) = clampToScreen(fromX, fromY, bounds)
+        val (tx, ty) = clampToScreen(toX, toY, bounds)
         val path = Path().apply {
             moveTo(fx, fy)
             lineTo(tx, ty)
@@ -210,12 +206,15 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
                 }
                 val ok = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
                 focused.recycle()
-                root.recycle()
+                root?.recycle()
                 ok
             } else {
-                // Fallback: try shell input (requires ADB/root; gracefully degrades).
-                Runtime.getRuntime().exec(arrayOf("input", "text", text.replace(" ", "%s"))).waitFor()
-                true
+                // No editable focus. The old Runtime.exec("input text …") fallback ran
+                // without shell permissions and always failed while reporting success.
+                focused?.recycle()
+                root?.recycle()
+                DiagnosticLogger.warn(TAG, "Type: no editable focused node")
+                false
             }
         } catch (e: Exception) {
             DiagnosticLogger.error(TAG, "Type failed: ${e.message}")
@@ -251,7 +250,7 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
 
         if (!dispatched) {
             DiagnosticLogger.error(TAG, "dispatchGesture rejected immediately: $label")
-            cont.resume(false)
+            if (cont.isActive) cont.resume(false)
         }
     }
 
@@ -259,28 +258,32 @@ class GestureExecutor(private val service: AccessibilityService) : GestureEngine
      * Capture a screenshot via the accessibility API.
      *
      * NOTE: Prefer taking the screenshot through the perception layer
-     * ([AccessibilityChannel]) in production to keep screenshot logic in one place.
-     * This method is kept to satisfy [GestureEngine.takeScreenshot] for tests and
-     * simple callers; it delegates to the same accessibility API.
+     * ([com.autoapporganizer.core.perception.AccessibilityChannel]) in production to keep
+     * screenshot logic in one place. This method is kept to satisfy
+     * [GestureEngine.takeScreenshot] for tests and simple callers.
      */
     override suspend fun takeScreenshot(): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             DiagnosticLogger.warn(TAG, "Screenshot requires API 30+")
             return null
         }
-        val displayId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            service.display?.displayId ?: 0
-        } else 0
+        val displayId = service.display?.displayId ?: 0
         return suspendCancellableCoroutine { cont ->
-            service.takeScreenshot(displayId, service.mainExecutor) { screenshot ->
-                val bitmap = if (screenshot == null || screenshot.format == AccessibilityService.Screenshot.ERROR_UNKNOWN) {
-                    DiagnosticLogger.warn(TAG, "Screenshot failed: ${screenshot?.format}")
-                    null
-                } else {
-                    screenshot.bitmap
+            service.takeScreenshot(
+                displayId,
+                service.mainExecutor,
+                object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                            val bitmap = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+                            if (cont.isActive) cont.resume(bitmap)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        DiagnosticLogger.warn(TAG, "Screenshot failed: errorCode=$errorCode")
+                        if (cont.isActive) cont.resume(null)
+                    }
                 }
-                if (cont.isActive) cont.resume(bitmap)
-            }
+            )
         }
     }
 }

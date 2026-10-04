@@ -15,8 +15,12 @@ import kotlin.math.min
 object PerceptionFusion {
 
     /**
-     * Two detections are considered the same icon if their bounding boxes
-     * overlap by at least this ratio (intersection / smaller box).
+     * Threshold on the composite match score (0.6·overlap + 0.25·center + 0.15·label).
+     *
+     * The name is historical: this is NOT a pure overlap ratio. A 0.5 overlap with a
+     * perfect label match but centers >40px apart scores 0.45 and does NOT merge;
+     * pure overlap needs ~0.83 to reach the threshold on its own. Kept at 0.5 for
+     * behavior compatibility — the tests pin the composite semantics.
      */
     private const val MIN_OVERLAP_RATIO = 0.5f
 
@@ -65,7 +69,8 @@ object PerceptionFusion {
                         label = mergeLabel(a.label, v.label),
                         bounds = a.bounds,
                         confidence = combineConfidence(v.confidence, a.confidence),
-                        source = ScreenElement.Source.FUSED
+                        source = ScreenElement.Source.FUSED,
+                        packageName = a.packageName ?: v.packageName
                     )
                 )
             } else {

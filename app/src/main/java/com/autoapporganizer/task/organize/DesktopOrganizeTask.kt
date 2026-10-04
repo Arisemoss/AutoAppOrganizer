@@ -14,7 +14,6 @@ import com.autoapporganizer.core.feedback.FeedbackCollector
 import com.autoapporganizer.core.layout.DragOptimizer
 import com.autoapporganizer.core.layout.SpatialClusterer
 import com.autoapporganizer.core.model.VisionModelService
-import com.autoapporganizer.core.model.VisionResult
 import com.autoapporganizer.core.perception.AccessibilityChannel
 import com.autoapporganizer.core.perception.PerceptionFusion
 import com.autoapporganizer.core.perception.ScreenElement
@@ -50,10 +49,10 @@ class DesktopOrganizeTask(
 
         private const val PHASE = "phase"
         private const val CATEGORY = "category"
-        private const val DRAG_INDEX = "dragIndex"
+        private const val DRAG_QUEUE = "dragQueue"
         private const val FOLDER_BOUNDS = "folderBounds"
 
-        /** Minimum overlap ratio to consider a perception element a folder candidate. */
+        /** Folder candidates must fall inside this size window (px). */
         private const val FOLDER_MIN_SIZE_PX = 80
         private const val FOLDER_MAX_SIZE_PX = 400
     }
@@ -87,6 +86,18 @@ class DesktopOrganizeTask(
     /** Ordered list of categories that have enough members to form a folder. */
     private var categoryQueue: MutableList<String> = mutableListOf()
 
+    /** Icons discovered during [describe] (for history records). */
+    private var iconCount = 0
+
+    /** Category → member count snapshot from [describe] (for history records). */
+    private var categorySummary: Map<String, Int> = emptyMap()
+
+    // Anchor pair + remaining drag order for the category currently being organized.
+    // reason() computes them, observe() consumes them (reason cannot write state).
+    private var currentAnchorIdx = -1
+    private var currentSecondIdx = -1
+    private var currentDragQueue: List<Int> = emptyList()
+
     // ──────────────────────────────────────────────
     // AgentTask implementation
     // ──────────────────────────────────────────────
@@ -101,6 +112,8 @@ class DesktopOrganizeTask(
 
         // 使用 AI 语义分类 + 关键词兜底（参考 Operit autoCategorizeMemories）
         categorized = categorizeWithAI(merged)
+        iconCount = merged.size
+        categorySummary = categorized.mapValues { it.value.size }
 
         // Only keep categories that meet the minimum folder size.
         val minSize = prefs.minFolderSize.coerceAtLeast(2)
@@ -120,13 +133,12 @@ class DesktopOrganizeTask(
 
     override suspend fun reason(
         state: TaskState,
-        perception: List<ScreenElement>,
-        visionResult: VisionResult?
+        perception: List<ScreenElement>
     ): Action {
         val phase = state.context[PHASE] as? String ?: "scan"
 
         return when (phase) {
-            "scan" -> reasonScan(state)
+            "scan" -> reasonScan(state, perception)
             "drag" -> reasonDrag(state, perception)
             "next" -> reasonNext()
             "done" -> Action.Complete
@@ -134,7 +146,7 @@ class DesktopOrganizeTask(
         }
     }
 
-    private fun reasonScan(state: TaskState): Action {
+    private fun reasonScan(state: TaskState, perception: List<ScreenElement>): Action {
         // Drop empty or too-small categories silently.
         while (categoryQueue.isNotEmpty()) {
             val cat = categoryQueue.first()
@@ -154,8 +166,17 @@ class DesktopOrganizeTask(
 
         // 空间优化：选择距离质心最近的图标对作为锚点，减少拖拽距离
         val (anchorIdx, secondIdx) = SpatialClusterer.findAnchorPair(elements)
-        val anchor = elements[anchorIdx]
-        val second = elements[secondIdx]
+        currentAnchorIdx = anchorIdx
+        currentSecondIdx = secondIdx
+        // The anchors become the folder; everything else must be dragged into it in
+        // this order. Never assume the pair is (0, 1) — findAnchorPair is centroid-based.
+        currentDragQueue = elements.indices.filter { it != anchorIdx && it != secondIdx }
+
+        // Launchers re-grid icons after every drop, so coordinates captured during
+        // describe() are stale for every category after the first. Re-locate both
+        // endpoints in the fresh perception; fall back to cached bounds on no match.
+        val anchor = relocate(elements[anchorIdx], perception)
+        val second = relocate(elements[secondIdx], perception)
 
         DiagnosticLogger.info(
             TAG,
@@ -170,11 +191,18 @@ class DesktopOrganizeTask(
 
     private fun reasonDrag(state: TaskState, perception: List<ScreenElement>): Action {
         val cat = state.context[CATEGORY] as? String ?: return Action.Complete
-        val elements = categorized[cat].orEmpty()
-        val dragIndex = (state.context[DRAG_INDEX] as? Int) ?: 2
+        val queue = state.context[DRAG_QUEUE] as? List<Int> ?: emptyList()
 
-        if (dragIndex >= elements.size) {
+        val nextIdx = queue.firstOrNull()
+        if (nextIdx == null) {
             DiagnosticLogger.info(TAG, "reason: category '$cat' drag complete")
+            return Action.Wait(300)
+        }
+
+        val elements = categorized[cat].orEmpty()
+        if (nextIdx >= elements.size) {
+            // Defensive: the category shrank between describe() and now.
+            DiagnosticLogger.warn(TAG, "reason: drag index $nextIdx out of bounds for '$cat'")
             return Action.Wait(300)
         }
 
@@ -183,10 +211,10 @@ class DesktopOrganizeTask(
         val folderBounds = locateFolder(perception, state)
             ?: return Action.Complete
 
-        val target = elements[dragIndex]
+        val target = relocate(elements[nextIdx], perception)
         DiagnosticLogger.info(
             TAG,
-            "reason: dragging ${target.label}[$dragIndex] into '$cat' folder at $folderBounds"
+            "reason: dragging ${target.label}[$nextIdx] into '$cat' folder at $folderBounds"
         )
         return Action.Drag(
             target.centerX, target.centerY,
@@ -226,16 +254,15 @@ class DesktopOrganizeTask(
                         return state.copy(step = state.step + 1, errors = errors)
                     }
 
-                    // 使用空间优化后的锚点对：文件夹创建在 second 图标的位置
-                    val (_, secondIdx) = SpatialClusterer.findAnchorPair(elements)
+                    // The folder should now exist near the second anchor icon. Use the
+                    // second icon's original bounds as the initial folder location;
+                    // reasonDrag will re-locate it before each subsequent drop.
+                    val secondIdx = currentSecondIdx.coerceIn(0, elements.size - 1)
                     val secondElement = elements[secondIdx]
 
-                    // The folder should now exist near the second icon. Use the second icon's
-                    // original bounds as the initial folder location; reasonDrag will re-locate
-                    // it before each subsequent drop.
                     newContext[PHASE] = "drag"
                     newContext[CATEGORY] = cat
-                    newContext[DRAG_INDEX] = 2
+                    newContext[DRAG_QUEUE] = currentDragQueue
                     newContext[FOLDER_BOUNDS] = secondElement.bounds
                     foldersCreated++
                     newItems += 2 // anchor + second are now inside the folder
@@ -248,18 +275,17 @@ class DesktopOrganizeTask(
             "drag" -> {
                 if (result) {
                     val cat = state.context[CATEGORY] as? String ?: return markDone(state, errors)
-                    val elements = categorized[cat].orEmpty()
-                    val currentDragIndex = (state.context[DRAG_INDEX] as? Int) ?: 2
-                    val nextDragIndex = currentDragIndex + 1
-                    newContext[DRAG_INDEX] = nextDragIndex
+                    val queue = (state.context[DRAG_QUEUE] as? List<Int>).orEmpty()
+                    val remaining = queue.drop(1)
+                    newContext[DRAG_QUEUE] = remaining
                     newItems++
 
-                    if (nextDragIndex >= elements.size) {
+                    if (remaining.isEmpty()) {
                         // All icons for this category have been moved into the folder.
                         categoryQueue.remove(cat)
                         newContext[PHASE] = "next"
                         newContext.remove(CATEGORY)
-                        newContext.remove(DRAG_INDEX)
+                        newContext.remove(DRAG_QUEUE)
                         newContext.remove(FOLDER_BOUNDS)
                         DiagnosticLogger.info(TAG, "observe: category '$cat' complete ($foldersCreated folders)")
                     }
@@ -291,16 +317,16 @@ class DesktopOrganizeTask(
     }
 
     /**
-     * Vision is useful when accessibility alone may miss icons or folders:
-     *  - "scan" : initial icon discovery
-     *  - "drag" : folder re-location after each drop
+     * Vision is consumed in [describe] (icon detection + AI classification). No VLM
+     * calls happen per ReAct step: the per-step result previously had no consumer.
      */
-    override fun needsVision(state: TaskState): Boolean {
-        val phase = state.context[PHASE] as? String ?: "scan"
-        return phase == "scan" || phase == "drag"
-    }
-
     override fun getFoldersCreated(): Int = foldersCreated
+
+    /** Icons discovered during [describe] (for history records). */
+    fun getIconsFound(): Int = iconCount
+
+    /** Category → member count snapshot from [describe] (for history records). */
+    fun getCategorySummary(): Map<String, Int> = categorySummary
 
     // ──────────────────────────────────────────────
     // Helpers
@@ -369,18 +395,24 @@ class DesktopOrganizeTask(
     /**
      * Locate the folder created in the current category.
      *
-     * 1. Search the latest perception for a large element near the original folder hint.
-     * 2. Fall back to the cached hint from "scan".
-     * 3. If neither exists, abort the category.
+     * 1. Prefer a size-window element whose label names the category (launchers
+     *    usually label the folder with its name — app icons share the size window,
+     *    so size alone is not a reliable folder signal).
+     * 2. Fall back to the size-window element nearest the original folder hint.
+     * 3. Fall back to the cached hint from "scan"; abort the category if null.
      */
     private fun locateFolder(perception: List<ScreenElement>, state: TaskState): Rect? {
         val hint = state.context[FOLDER_BOUNDS] as? Rect
         val cat = state.context[CATEGORY] as? String
 
-        // Try finding a folder node in the current perception.
-        val folder = perception
-            .filter { it.bounds.width() in FOLDER_MIN_SIZE_PX..FOLDER_MAX_SIZE_PX && it.bounds.height() in FOLDER_MIN_SIZE_PX..FOLDER_MAX_SIZE_PX }
-            .minByOrNull { elem ->
+        val candidates = perception.filter {
+            it.bounds.width() in FOLDER_MIN_SIZE_PX..FOLDER_MAX_SIZE_PX &&
+                it.bounds.height() in FOLDER_MIN_SIZE_PX..FOLDER_MAX_SIZE_PX
+        }
+
+        val folder = candidates
+            .firstOrNull { cat != null && it.label.contains(cat, ignoreCase = true)  }?.bounds
+            ?: candidates.minByOrNull { elem ->
                 val hintRect = hint ?: return@minByOrNull Int.MAX_VALUE
                 val dx = elem.bounds.exactCenterX() - hintRect.exactCenterX()
                 val dy = elem.bounds.exactCenterY() - hintRect.exactCenterY()
@@ -393,6 +425,46 @@ class DesktopOrganizeTask(
         }
 
         return folder ?: hint
+    }
+
+    /**
+     * Re-locate [element] in the fresh perception scan.
+     *
+     * Launchers re-grid icons after every drop, so bounds captured during describe()
+     * go stale. The per-step scan is the source of truth: match by label (exact >
+     * containment) with bounds IoU as a tiebreaker, and fall back to the cached
+     * element when nothing matches (icon already moved, label merged by fusion).
+     */
+    private fun relocate(element: ScreenElement, perception: List<ScreenElement>): ScreenElement {
+        var best = element
+        var bestScore = 0f
+        for (p in perception) {
+            val labelScore = when {
+                p.label.equals(element.label, ignoreCase = true) -> 2f
+                element.label.contains(p.label, ignoreCase = true) ||
+                    p.label.contains(element.label, ignoreCase = true) -> 1f
+                else -> 0f
+            }
+            if (labelScore == 0f) continue
+            val score = labelScore + boundsIoU(element.bounds, p.bounds)
+            if (score > bestScore) {
+                bestScore = score
+                best = p
+            }
+        }
+        return best
+    }
+
+    /** Intersection-over-union of two rects (0..1). */
+    private fun boundsIoU(a: Rect, b: Rect): Float {
+        val left = maxOf(a.left, b.left)
+        val top = maxOf(a.top, b.top)
+        val right = minOf(a.right, b.right)
+        val bottom = minOf(a.bottom, b.bottom)
+        if (right <= left || bottom <= top) return 0f
+        val inter = (right - left) * (bottom - top).toFloat()
+        val union = a.width() * a.height() + b.width() * b.height() - inter
+        return if (union > 0f) inter / union else 0f
     }
 
     private fun markDone(state: TaskState, errors: List<String>): TaskState {

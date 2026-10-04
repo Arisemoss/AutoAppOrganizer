@@ -9,7 +9,6 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -43,7 +42,7 @@ class LocalVlmService(private val prefs: PrefsManager) : VisionModelService {
                 val model = prefs.vlmModel.ifEmpty { DEFAULT_MODEL }
                 val apiKey = prefs.vlmApiKey
 
-                val base64 = encodeBitmapToPngBase64(bitmap)
+                val base64 = VlmImageEncoder.encodeToJpegBase64(bitmap)
                 DiagnosticLogger.debug(
                     TAG,
                     "Analyzing ${bitmap.width}x${bitmap.height} with local model=$model endpoint=$endpoint"
@@ -58,18 +57,12 @@ class LocalVlmService(private val prefs: PrefsManager) : VisionModelService {
             }
         }
 
-    private fun encodeBitmapToPngBase64(bitmap: Bitmap): String {
-        val stream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-        return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
-    }
-
     private fun buildRequestBody(model: String, prompt: String, base64Image: String): String {
         val content = JsonArray().apply {
             add(JsonObject().apply { addProperty("type", "text"); addProperty("text", prompt) })
             add(JsonObject().apply {
                 addProperty("type", "image_url")
-                add("image_url", JsonObject().apply { addProperty("url", "data:image/png;base64,$base64Image") })
+                add("image_url", JsonObject().apply { addProperty("url", "data:image/jpeg;base64,$base64Image") })
             })
         }
         val message = JsonObject().apply {

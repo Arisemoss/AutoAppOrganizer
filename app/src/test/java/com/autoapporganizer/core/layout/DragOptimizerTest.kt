@@ -76,7 +76,7 @@ class DragOptimizerTest {
 
         assertNotNull(plan.anchor)
         assertEquals(3, plan.ordered.size)
-        assertEquals(3, plan.dragSteps.size)
+        assertEquals(2, plan.dragSteps.size) // 1 folder-creation + 1 drag-in
         assertTrue(plan.dragSteps[0].isFolderCreation)
     }
 

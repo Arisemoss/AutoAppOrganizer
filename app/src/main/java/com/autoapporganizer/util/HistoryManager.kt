@@ -57,6 +57,12 @@ class HistoryManager(private val context: Context) {
             else gson.fromJson<MutableList<OrganizeSession>>(raw, type)
                 ?: emptyList()
         } catch (e: Exception) {
+            // 损坏的历史文件不能被下一次 append 静默清空：先留档再返回空，
+            // append 会以空列表重写主文件，损坏数据仅存于 .corrupt 副本中。
+            try {
+                file.copyTo(File(file.parent, "${file.name}.corrupt"), overwrite = true)
+            } catch (ignored: Exception) {
+            }
             e.printStackTrace()
             emptyList()
         }
@@ -75,7 +81,13 @@ class HistoryManager(private val context: Context) {
 
     private fun save(list: List<OrganizeSession>) {
         try {
-            file.writeText(gson.toJson(list))
+            // 与 BackupManager 相同的 tmp+rename 原子写；rename 失败退化为直接写。
+            val tmp = File(file.parent, "${file.name}.tmp")
+            tmp.writeText(gson.toJson(list))
+            if (!tmp.renameTo(file)) {
+                file.writeText(gson.toJson(list))
+                tmp.delete()
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         }

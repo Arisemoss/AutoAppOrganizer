@@ -1,7 +1,7 @@
 package com.autoapporganizer.core.feedback
 
 import com.autoapporganizer.core.classification.ClassificationResponse
-import com.autoapporganizer.core.classification.CategoryResult
+import com.autoapporganizer.core.classification.ClassificationResult
 import com.autoapporganizer.core.classification.ClassifiedApp
 import org.junit.Assert.*
 import org.junit.Before
@@ -23,7 +23,7 @@ class FeedbackCollectorTest {
     fun `collect tracks AI classified count`() {
         val response = ClassificationResponse(
             categories = listOf(
-                CategoryResult("社交", listOf(
+                ClassificationResult("社交", listOf(
                     ClassifiedApp("微信", "社交", 0.95f, null),
                     ClassifiedApp("QQ", "社交", 0.92f, null)
                 ))
@@ -43,7 +43,7 @@ class FeedbackCollectorTest {
     fun `collect tracks low confidence items`() {
         val response = ClassificationResponse(
             categories = listOf(
-                CategoryResult("社交", listOf(
+                ClassificationResult("社交", listOf(
                     ClassifiedApp("微信", "社交", 0.95f, null),
                     ClassifiedApp("未知App", "社交", 0.3f, null) // low confidence
                 ))
@@ -64,7 +64,7 @@ class FeedbackCollectorTest {
     fun `recordCorrection removes from low confidence list`() {
         val response = ClassificationResponse(
             categories = listOf(
-                CategoryResult("社交", listOf(
+                ClassificationResult("社交", listOf(
                     ClassifiedApp("微信", "社交", 0.3f, null) // low confidence
                 ))
             ),
@@ -83,7 +83,7 @@ class FeedbackCollectorTest {
     fun `reset clears all data`() {
         val response = ClassificationResponse(
             categories = listOf(
-                CategoryResult("社交", listOf(
+                ClassificationResult("社交", listOf(
                     ClassifiedApp("微信", "社交", 0.95f, null)
                 ))
             ),
@@ -104,7 +104,7 @@ class FeedbackCollectorTest {
     fun `summary calculates AI coverage rate`() {
         val response = ClassificationResponse(
             categories = listOf(
-                CategoryResult("社交", listOf(
+                ClassificationResult("社交", listOf(
                     ClassifiedApp("微信", "社交", 0.95f, null),
                     ClassifiedApp("QQ", "社交", 0.92f, null)
                 ))

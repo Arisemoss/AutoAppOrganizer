@@ -22,6 +22,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.autoapporganizer.ui.theme.DarkBgEnd
+import com.autoapporganizer.ui.theme.DarkBgStart
+import com.autoapporganizer.ui.theme.LightBgEnd
+import com.autoapporganizer.ui.theme.LightBgStart
 import com.autoapporganizer.ui.theme.BorderSubtleDark
 import com.autoapporganizer.ui.theme.BorderSubtleLight
 import com.autoapporganizer.ui.theme.DarkSurface

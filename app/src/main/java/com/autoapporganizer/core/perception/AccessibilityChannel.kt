@@ -125,6 +125,9 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
             }
             if (child != null) {
                 traverse(child, out)
+                // 递归返回后子节点引用不再使用；API<33 上每个节点持有 binder 引用，
+                // 而 scanElements 在 ReAct 循环中每步调用一次，不回收会线性泄漏。
+                child.recycle()
             }
         }
     }
@@ -142,7 +145,17 @@ class AccessibilityChannelImpl(private val service: AccessibilityService) : Acce
                         ContextCompat.getMainExecutor(service),
                         object : AccessibilityService.TakeScreenshotCallback {
                             override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                                val bitmap = result.bitmap
+                                // API 30+ 返回 HardwareBuffer:包装为硬件 Bitmap(VLM 编码器会上传前拷贝为软件位图)
+                                val wrapped = Bitmap.wrapHardwareBuffer(
+                                    result.hardwareBuffer,
+                                    result.colorSpace
+                                )
+                                if (wrapped == null) {
+                                    DiagnosticLogger.error(TAG, "wrapHardwareBuffer failed")
+                                    if (cont.isActive) cont.resume(null)
+                                    return
+                                }
+                                val bitmap = wrapped
                                 DiagnosticLogger.debug(
                                     TAG,
                                     "Screenshot captured: ${bitmap.width}x${bitmap.height}"

@@ -70,8 +70,8 @@ class ClassificationFusionTest {
         val elements = listOf(element("微信"), element("抖音"))
         val aiResponse = ClassificationResponse(
             categories = listOf(
-                CategoryResult("社交", listOf(classifiedApp("微信", "社交", 0.95f))),
-                CategoryResult("视频", listOf(classifiedApp("抖音", "视频", 0.92f)))
+                ClassificationResult("社交", listOf(classifiedApp("微信", "社交", 0.95f))),
+                ClassificationResult("视频", listOf(classifiedApp("抖音", "视频", 0.92f)))
             ),
             uncertain = emptyList(),
             thought = "test"
@@ -89,8 +89,8 @@ class ClassificationFusionTest {
         val aiResponse = ClassificationResponse(
             categories = listOf(
                 // Low confidence - should fall back to keyword
-                CategoryResult("视频", listOf(classifiedApp("微信", "视频", 0.3f))),
-                CategoryResult("工具", listOf(classifiedApp("计算器", "工具", 0.9f)))
+                ClassificationResult("视频", listOf(classifiedApp("微信", "视频", 0.3f))),
+                ClassificationResult("工具", listOf(classifiedApp("计算器", "工具", 0.9f)))
             ),
             uncertain = emptyList(),
             thought = "test"
@@ -128,7 +128,7 @@ class ClassificationFusionTest {
         val elements = listOf(element("微信"), element("计算器"), element("未知应用"))
         val aiResponse = ClassificationResponse(
             categories = listOf(
-                CategoryResult("社交", listOf(classifiedApp("微信", "社交", 0.95f)))
+                ClassificationResult("社交", listOf(classifiedApp("微信", "社交", 0.95f)))
             ),
             uncertain = emptyList(),
             thought = "test"
@@ -149,12 +149,12 @@ class ClassificationFusionTest {
         val elements = listOf(element("微信"), element("QQ"), element("计算器"))
         val aiResponse = ClassificationResponse(
             categories = listOf(
-                CategoryResult("社交", listOf(
+                ClassificationResult("社交", listOf(
                     classifiedApp("微信", "社交", 0.95f),
                     classifiedApp("QQ", "社交", 0.92f)
                 )),
                 // Only 1 element in 工具 - should be merged to 其他
-                CategoryResult("工具", listOf(classifiedApp("计算器", "工具", 0.9f)))
+                ClassificationResult("工具", listOf(classifiedApp("计算器", "工具", 0.9f)))
             ),
             uncertain = emptyList(),
             thought = "test"

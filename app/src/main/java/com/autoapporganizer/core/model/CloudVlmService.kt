@@ -11,7 +11,6 @@ import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -65,7 +64,7 @@ class CloudVlmService(private val prefs: PrefsManager) : VisionModelService {
                 val provider = prefs.vlmProvider
                 val model = resolveModel(provider)
                 val endpoint = resolveEndpoint(provider, model)
-                val base64 = encodeBitmapToPngBase64(bitmap)
+                val base64 = VlmImageEncoder.encodeToJpegBase64(bitmap)
                 DiagnosticLogger.debug(
                     TAG,
                     "Encoded ${bitmap.width}x${bitmap.height} bitmap -> ${base64.length} base64 chars; " +
@@ -82,16 +81,6 @@ class CloudVlmService(private val prefs: PrefsManager) : VisionModelService {
                 VisionResult.Error(e.message ?: "Unknown error", e)
             }
         }
-
-    // ---------------------------------------------------------------------------------------------
-    // Bitmap encoding
-    // ---------------------------------------------------------------------------------------------
-
-    private fun encodeBitmapToPngBase64(bitmap: Bitmap): String {
-        val baos = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
-        return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
-    }
 
     // ---------------------------------------------------------------------------------------------
     // Endpoint / model resolution
@@ -152,7 +141,7 @@ class CloudVlmService(private val prefs: PrefsManager) : VisionModelService {
         val imagePart = JsonObject().apply {
             addProperty("type", "image_url")
             val imageUrl = JsonObject().apply {
-                addProperty("url", "data:image/png;base64,$base64")
+                addProperty("url", "data:image/jpeg;base64,$base64")
             }
             add("image_url", imageUrl)
         }
@@ -178,7 +167,7 @@ class CloudVlmService(private val prefs: PrefsManager) : VisionModelService {
         val textPart = JsonObject().apply { addProperty("text", prompt) }
         val imagePart = JsonObject().apply {
             val inlineData = JsonObject().apply {
-                addProperty("mime_type", "image/png")
+                addProperty("mime_type", "image/jpeg")
                 addProperty("data", base64)
             }
             add("inline_data", inlineData)

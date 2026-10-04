@@ -59,10 +59,6 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
         /** 拖动时长（ms） */
         private const val DRAG_MS = 500L
 
-        // NOTE: GESTURE_TIMEOUT_MS used to live here for the local dispatchGestureSync().
-        // It was removed when dragAndDrop was consolidated into GestureExecutor (#7), which
-        // carries its own GESTURE_TIMEOUT_MS. If you need to tune the gesture timeout,
-        // see GestureExecutor.GESTURE_TIMEOUT_MS.
 
         /** 整理操作总超时（ms）—— 避免 VLM/手势挂死导致无限等待 */
         private const val ORGANIZE_TIMEOUT_MS = 5 * 60 * 1000L // 5 分钟
@@ -102,6 +98,9 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
     }
 
     private val serviceScope = MainScope()
+
+    /** 当前整理/撤销协程 —— [cancelOrganize] 通过取消它实现安全中断。 */
+    private var organizeJob: Job? = null
     private lateinit var categoryMatcher: CategoryMatcher
     private lateinit var backupManager: BackupManager
     private lateinit var usageStatsManager: UsageStatsManager
@@ -118,6 +117,33 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
 
     private var currentBackup: DesktopBackup? = null
     private lateinit var facade: OrganizerFacade
+
+    /**
+     * App label (lowercase) → real package name, resolved from PackageManager.
+     *
+     * [AccessibilityNodeInfo.getPackageName] on a home-screen icon returns the *launcher's*
+     * package (e.g. com.miui.home), not the icon's app. Every icon then shares one key, so
+     * keyword matching over package names collapses to a single bucket and the usage-stats
+     * lookup queries the launcher itself. Resolve the real package from the icon label
+     * instead; unmapped labels keep a null package and fall back to name-based matching.
+     */
+    private val appLabelToPackage: Map<String, String> by lazy {
+        try {
+            val pm = packageManager
+            pm.getInstalledApplications(0).mapNotNull { appInfo ->
+                val label = pm.getApplicationLabel(appInfo)?.toString()?.trim()?.lowercase()
+                if (label.isNullOrEmpty()) null else label to appInfo.packageName
+            }.toMap()
+        } catch (e: Exception) {
+            DiagnosticLogger.warn(TAG, "无法枚举已安装应用（缺 QUERY_ALL_PACKAGES 授权？）: ${e.message}")
+            emptyMap()
+        }
+    }
+
+    private fun resolveAppPackage(label: String): String? {
+        if (label.isBlank()) return null
+        return appLabelToPackage[label.trim().lowercase()]
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -181,12 +207,18 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
         organizeCallback?.onProgress(organizeProgress, message)
     }
 
+    /** 用户主动取消整理/撤销 —— 取消协程，UI 收到「已取消」回调。 */
+    fun cancelOrganize() {
+        organizeJob?.cancel()
+    }
+
     /** 开始整理桌面（兼容入口，实际通过 [OrganizerFacade] 分发到当前策略） */
     fun startOrganize() {
+        // 同帧双击保护：isOrganizing 必须在派发协程前置位（协程体要等下一帧才执行）。
         if (isOrganizing) return
+        isOrganizing = true
 
-        serviceScope.launch {
-            isOrganizing = true
+        organizeJob = serviceScope.launch {
             organizeProgress = 0
             try {
                 val result = withTimeout(ORGANIZE_TIMEOUT_MS) {
@@ -199,11 +231,15 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
                 }
                 reportProgress(100, result.message)
                 organizeCallback?.onComplete(result.success, result.foldersCreated, result.message)
-            } catch (e: CancellationException) {
-                throw e
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                // 注意 catch 顺序：TimeoutCancellationException 是 CancellationException
+                // 的子类，必须先捕获更具体的超时，否则超时分支永远不可达。
                 DiagnosticLogger.error(TAG, "整理超时（超过 ${ORGANIZE_TIMEOUT_MS / 60000} 分钟）")
                 organizeCallback?.onComplete(false, 0, "整理超时，请重试")
+            } catch (e: CancellationException) {
+                organizeCallback?.onComplete(false, 0, "整理已取消")
+                organizeCallback?.onComplete(false, 0, "整理已取消")
+                throw e
             } catch (e: Exception) {
                 DiagnosticLogger.error(TAG, "整理异常: ${e.message}")
                 e.printStackTrace()
@@ -234,7 +270,11 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
         reportProgress(10, "正在备份桌面…")
         currentBackup = backupDesktop()
         if (currentBackup != null) {
-            backupManager.saveBackup(currentBackup!!)
+            if (!backupManager.saveBackup(currentBackup!!)) {
+                DiagnosticLogger.warn(TAG, "备份保存失败，继续整理（无还原依据）")
+            }
+        } else {
+            DiagnosticLogger.warn(TAG, "桌面扫描为空，未生成备份")
         }
 
         // ③ 扫描并解析桌面图标
@@ -257,7 +297,7 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
         reportProgress(70, "正在整理桌面…")
         val folderCount = performOrganize(categorized)
 
-        // ⑥ 记录历史会话
+        // ⑥ 记录历史会话（文件 IO 移出主线程）
         val session = OrganizeSession(
             timestamp = System.currentTimeMillis(),
             folderCount = folderCount,
@@ -265,7 +305,9 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
             categories = categorized.mapValues { it.value.size },
             launcher = detectedLauncherPkg
         )
-        historyManager.append(session)
+        withContext(Dispatchers.IO) {
+            historyManager.append(session)
+        }
 
         return StrategyResult(
             success = folderCount > 0,
@@ -279,12 +321,13 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
     fun undoOrganize() {
         // 与整理流程共享 isOrganizing 互斥锁，避免整理中触发撤销或撤销中再次撤销，
         // 否则两个协程会同时派发手势，互相干扰。
+        // 同帧双击保护：与 startOrganize 一致，互斥位在派发协程前置位。
         if (isOrganizing) {
             organizeCallback?.onComplete(false, 0, "正在执行操作，请稍候")
             return
         }
+        isOrganizing = true
         serviceScope.launch {
-            isOrganizing = true
             organizeProgress = 0
             try {
                 val backup = backupManager.loadBackup() ?: currentBackup
@@ -309,6 +352,7 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
                 }
                 organizeCallback?.onComplete(true, result.dissolved, msg)
             } catch (e: CancellationException) {
+                organizeCallback?.onComplete(false, 0, "整理已取消")
                 throw e
             } catch (e: Exception) {
                 DiagnosticLogger.error(TAG, "撤销异常: ${e.message}")
@@ -372,18 +416,19 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
             organizeCallback?.onComplete(false, 0, "正在执行操作，请稍候")
             return
         }
+        isOrganizing = true
         serviceScope.launch {
-            isOrganizing = true
             organizeProgress = 0
             try {
                 val result = withTimeout(ORGANIZE_TIMEOUT_MS) { organizeByVision() }
                 reportProgress(100, result.message)
                 organizeCallback?.onComplete(result.success, result.foldersCreated, result.message)
-            } catch (e: CancellationException) {
-                throw e
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 DiagnosticLogger.error(TAG, "视觉整理超时")
                 organizeCallback?.onComplete(false, 0, "视觉整理超时，请重试")
+            } catch (e: CancellationException) {
+                organizeCallback?.onComplete(false, 0, "整理已取消")
+                throw e
             } catch (e: Exception) {
                 DiagnosticLogger.error(TAG, "视觉整理异常: ${e.message}")
                 e.printStackTrace()
@@ -418,11 +463,41 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
             }
         }
 
+        // 整理前备份桌面 —— 视觉路径以前没有备份，而默认策略是 hybrid，
+        // 这意味着大多数用户整理前根本没有还原依据。
+        reportProgress(8, "正在备份桌面…")
+        val backup = backupDesktop()
+        if (backup != null) {
+            val saved = backupManager.saveBackup(backup)
+            if (saved) {
+                currentBackup = backup
+            } else {
+                DiagnosticLogger.warn(TAG, "视觉整理：备份保存失败，继续整理（无还原依据）")
+            }
+        } else {
+            DiagnosticLogger.warn(TAG, "视觉整理：桌面扫描为空，未生成备份")
+        }
+
         val result = runner.run(task) { progress, msg ->
             reportProgress(progress, msg)
         }
 
         val folders = task.getFoldersCreated()
+
+        // 视觉路径以前不写历史，而结果页读取的是 historyManager.latest() ——
+        // 整理成功后结果页显示的是上一次（legacy）会话的旧数据。
+        withContext(Dispatchers.IO) {
+            historyManager.append(
+                OrganizeSession(
+                    timestamp = System.currentTimeMillis(),
+                    folderCount = folders,
+                    appCount = task.getIconsFound(),
+                    categories = task.getCategorySummary(),
+                    launcher = detectedLauncherPkg
+                )
+            )
+        }
+
         // 附加反馈摘要到结果消息
         val feedbackSummary = task.getFeedbackCollector().getSummary()
         val enhancedMessage = buildString {
@@ -438,7 +513,7 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
             success = result.success,
             message = enhancedMessage,
             foldersCreated = folders,
-            appsOrganized = result.stepsExecuted
+            appsOrganized = task.getIconsFound()
         )
     }
 
@@ -561,8 +636,8 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
                 DiagnosticLogger.warn(TAG, "  1. 当前窗口不是桌面 (包名: $rootPkg)")
                 DiagnosticLogger.warn(TAG, "  2. Launcher 使用非标准视图结构")
                 DiagnosticLogger.warn(TAG, "  3. 权限不足 — 请检查无障碍、悬浮窗权限")
-                DiagnosticLogger.info(TAG, "被跳过的可疑节点 (${potentialNodes.size}):")
-                potentialNodes.take(20).forEach { DiagnosticLogger.debug(TAG, it) }
+                DiagnosticLogger.info(TAG, "被跳过的可疑节点 (${potentialNodes?.size ?: 0}):")
+                potentialNodes?.take(20)?.forEach { DiagnosticLogger.debug(TAG, it) }
             }
         }
 
@@ -603,7 +678,7 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
                 type = DesktopItem.ItemType.APP,
                 name = name,
                 bounds = bounds,
-                packageName = node.packageName?.toString()
+                packageName = resolveAppPackage(name)
             )
         }
 
@@ -830,20 +905,24 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
         val total = categoriesToOrganize.size
         var folderCount = 0
         for ((category, items) in categoriesToOrganize) {
-            folderCount++
             // 进度从 70 线性推进到 95，避免超过 100
-            val progress = if (total > 0) 70 + (folderCount * 25 / total) else 70
+            val progress = if (total > 0) 70 + ((folderCount + 1) * 25 / total) else 70
             reportProgress(progress, "正在整理 $category…")
-            createFolderAndAddItems(items, category)
+            // 只统计真正建出文件夹的类目：旧实现先 ++ 再执行，失败也计入，
+            // 「共创建 N 个文件夹」可能虚报。
+            if (createFolderAndAddItems(items, category)) {
+                folderCount++
+            }
             delay(300)
         }
         return folderCount
     }
 
-    private suspend fun createFolderAndAddItems(items: List<DesktopItem>, category: String) {
-        if (items.size < 2) return
-        val firstBounds = items[0].bounds ?: return
-        val secondBounds = items[1].bounds ?: return
+    /** @return true 当文件夹创建成功（能在桌面上定位到新文件夹） */
+    private suspend fun createFolderAndAddItems(items: List<DesktopItem>, category: String): Boolean {
+        if (items.size < 2) return false
+        val firstBounds = items[0].bounds ?: return false
+        val secondBounds = items[1].bounds ?: return false
         // ① 拖第一个图标到第二个图标上，触发文件夹创建
         dragAndDrop(firstBounds, secondBounds)
         delay(600)
@@ -858,7 +937,10 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
                 val dx = b.centerX() - secondBounds.centerX()
                 val dy = b.centerY() - secondBounds.centerY()
                 dx * dx + dy * dy
-            }?.bounds ?: secondBounds
+            }?.bounds ?: run {
+            DiagnosticLogger.warn(TAG, "「$category」文件夹未在桌面定位到，视为创建失败")
+            return false
+        }
         DiagnosticLogger.info(
             TAG, "「$category」文件夹目标坐标: $folderBounds（原第二图标: $secondBounds" +
                 if (folderBounds != secondBounds) "，已被网格重排）" else "）"
@@ -884,6 +966,7 @@ class AutoAppOrganizerService : AccessibilityService(), LegacyOrganizer, VisionO
                 delay(400)
             }
         }
+        return true
     }
 
     // ──────────────────────────────────────────────

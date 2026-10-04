@@ -1,119 +1,135 @@
 package com.autoapporganizer.core.layout
 
-import com.autoapporganizer.core.action.Action
 import com.autoapporganizer.core.perception.ScreenElement
 import com.autoapporganizer.util.DiagnosticLogger
 
 /**
- * 拖拽优化器 —— 参考 Operit GraphVisualizer 的力导向布局优化思路。
+ * 拖拽优化器 —— 负责两件事：
+ * 1. [prioritizeCategories]：决定先整理哪个分类（数量多、空间集中的优先）
+ * 2. [optimizeCategory]：为单个分类生成拖拽计划（锚点对建夹 + 剩余图标按距离拖入）
  *
- * 在 DesktopOrganizeTask 的整理流程中集成空间优化：
- * 1. 同一分类的图标按空间临近度排序，减少拖拽距离
- * 2. 文件夹创建在空间中心位置
- * 3. 跨分类排序：优先处理图标数量多、分布集中的分类
- *
- * 使用方式：
- * ```
- * val optimized = DragOptimizer.optimizeCategory(categoryElements)
- * // optimized.anchor → 最近的图标，optimized.ordered → 排序后的图标列表
- * ```
+ * 生产链路只接线了 [prioritizeCategories]；[optimizeCategory] 供测试与后续
+ * 计划型执行器使用，契约与 DragOptimizerTest 保持一致。
  */
 object DragOptimizer {
 
     private const val TAG = "DragOptimizer"
 
     /**
-     * 对多个分类进行优先级排序。
+     * 对分类进行优先级排序。
      *
-     * 排序策略（参考 Operit 的知识图谱批量处理）：
-     * 1. 图标数量多的优先（减少碎片化）
-     * 2. 空间分布集中的优先（密集分类先处理，减少后续图标移位影响）
-     * 3. 包含新创建分类的优先（AI 发现的新分类需要优先创建文件夹）
+     * 排序策略：
+     * 1. 图标数量多的分类优先（一次整理收益最大）
+     * 2. 数量相同时，空间分散度小的优先（图标聚集的分类拖拽路径更短，
+     *    先做低风险高收益的分类）
      *
-     * @param categories 分类名 → 图标列表的映射
-     * @return 排序后的分类名列表
+     * @param categories 分类名 → 该分类的图标列表
+     * @return 按优先级排序的分类名列表
      */
-    fun prioritizeCategories(
-        categories: Map<String, List<ScreenElement>>
-    ): List<String> {
+    fun prioritizeCategories(categories: Map<String, List<ScreenElement>>): List<String> {
         return categories.entries
             .sortedWith(
-                compareByDescending<Map.Entry<String, List<ScreenElement>>> { entry ->
-                    // 1. 图标数量多的优先
-                    entry.value.size
-                }.thenBy { entry ->
-                    // 2. 空间分布分散度（方差）小的优先，即密集的优先
-                    spatialDispersion(entry.value)
-                }
+                compareByDescending<Map.Entry<String, List<ScreenElement>>> { it.value.size }
+                    .thenBy { spatialDispersion(it.value) }
             )
             .map { it.key }
     }
 
     /**
-     * 优化单个分类的拖拽序列。
+     * 为单个分类生成拖拽计划。
      *
-     * 返回优化后的动作序列和锚点信息。
-     *
-     * @param elements 同一分类的图标列表
-     * @return 优化结果
+     * 契约：
+     * - 少于 2 个元素：无法建夹，anchor=null、ordered=原列表、无拖拽步骤
+     * - ≥2 个元素：锚点对（[SpatialClusterer.findAnchorPair]）拖拽建夹，
+     *   文件夹落在 second 图标位置；ordered 恰好包含全部元素（锚点对在前，
+     *   其余按到 second 的距离升序）；dragSteps = 1 步建夹 + (n-2) 步拖入
      */
     fun optimizeCategory(elements: List<ScreenElement>): CategoryDragPlan {
         if (elements.size < 2) {
             return CategoryDragPlan(
-                anchor = elements.firstOrNull(),
+                anchor = null,
                 ordered = elements,
                 dragSteps = emptyList()
             )
         }
 
-        val steps = SpatialClusterer.optimizeDragSequence(elements)
-        // 从 DragStep 中提取锚点索引（第一个步骤的 fromIndex 即锚点）
-        val anchorIdx = steps.firstOrNull()?.fromIndex ?: 0
+        val (anchorIdx, secondIdx) = SpatialClusterer.findAnchorPair(elements)
+        val anchor = elements[anchorIdx]
+        val second = elements[secondIdx]
 
-        // 按拖拽步骤排序图标
-        val orderedIndices = steps.map { it.fromIndex }.distinct()
-        val ordered = orderedIndices.map { elements[it] }
+        // 剩余图标按到 second（即文件夹落点）的距离升序，拖拽路径最短。
+        val rest = elements.indices
+            .filter { it != anchorIdx && it != secondIdx }
+            .sortedBy { idx ->
+                val dx = elements[idx].centerX - second.centerX
+                val dy = elements[idx].centerY - second.centerY
+                dx * dx + dy * dy
+            }
+
+        val steps = buildList {
+            add(
+                DragStep(
+                    fromIndex = anchorIdx,
+                    fromLabel = anchor.label,
+                    toIndex = secondIdx,
+                    toLabel = second.label,
+                    isFolderCreation = true
+                )
+            )
+            rest.forEach { idx ->
+                add(
+                    DragStep(
+                        fromIndex = idx,
+                        fromLabel = elements[idx].label,
+                        toIndex = secondIdx,
+                        toLabel = second.label,
+                        isFolderCreation = false
+                    )
+                )
+            }
+        }
 
         DiagnosticLogger.debug(
             TAG,
             "Optimized category: ${elements.size} icons, ${steps.size} steps, " +
-                "anchor=${elements[anchorIdx].label}, " +
-                "dispersion=${spatialDispersion(elements)}"
+                "anchor=${anchor.label}, dispersion=${spatialDispersion(elements)}"
         )
 
         return CategoryDragPlan(
-            anchor = elements[anchorIdx],
-            ordered = ordered,
+            anchor = anchor,
+            ordered = listOf(anchor, second) + rest.map { elements[it] },
             dragSteps = steps
         )
     }
 
     /**
-     * 计算一组图标的空间分散度（方差）。
+     * 计算一组图标的空间分散度（到质心距离平方的均值）。
      *
-     * 值越小表示图标越集中，整理时拖拽距离越短。
+     * 值越小表示图标越聚集，整理时的拖拽总距离越短。
+     * 除以 n 而非 n-1：仅用于排序，量纲差一个常数因子不影响次序。
      */
     private fun spatialDispersion(elements: List<ScreenElement>): Float {
         if (elements.size <= 1) return 0f
         val centroid = SpatialClusterer.computeCentroid(elements)
-        var sumSqDist = 0f
+        var sumSq = 0f
         for (el in elements) {
             val dx = el.centerX - centroid.x
             val dy = el.centerY - centroid.y
-            sumSqDist += dx * dx + dy * dy
+            sumSq += dx * dx + dy * dy
         }
-        return sumSqDist / elements.size
+        return sumSq / elements.size
     }
 }
 
 /**
  * 单个分类的拖拽计划。
+ *
+ * @param anchor    建夹锚点（<2 个元素时为 null）
+ * @param ordered   处理顺序的全部图标（锚点对在前，其余按到文件夹落点的距离排序）
+ * @param dragSteps 拖拽步骤：1 步建夹 + (n-2) 步拖入
  */
 data class CategoryDragPlan(
-    /** 锚点图标（文件夹创建位置） */
     val anchor: ScreenElement?,
-    /** 优化排序后的图标列表 */
     val ordered: List<ScreenElement>,
-    /** 拖拽步骤序列 */
     val dragSteps: List<DragStep>
 )

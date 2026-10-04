@@ -1,355 +1,248 @@
 package com.autoapporganizer.ui
 
 import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import com.autoapporganizer.service.AutoAppOrganizerService
-import com.autoapporganizer.ui.components.LiquidSnackbarHost
-import com.autoapporganizer.ui.components.SnackType
+import com.autoapporganizer.ui.components.WindowSize
+import com.autoapporganizer.ui.components.rememberWindowSize
 import com.autoapporganizer.ui.screens.AccessibilityGuideScreen
 import com.autoapporganizer.ui.screens.BackupScreen
 import com.autoapporganizer.ui.screens.HomeScreen
 import com.autoapporganizer.ui.screens.OrganizingScreen
 import com.autoapporganizer.ui.screens.ResultScreen
-import com.autoapporganizer.ui.theme.AppCategory
 import com.autoapporganizer.ui.theme.AutoAppOrganizerTheme
-import com.autoapporganizer.util.BackupManager
-import com.autoapporganizer.util.HistoryManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
- * 主控制台 —— Compose 宿主。
+ * 主界面 —— 单 Activity + Compose。
  *
- * 持有导航状态与整理流程状态，通过 [AutoAppOrganizerService.organizeCallback]
- * 接收进度/完成回调（统一切回主线程），驱动 Organizing / Result 页面流转。
- * 保留对原有 [SettingsActivity] 的跳转，以及视觉整理 / 诊断入口。
+ * 状态全部 [rememberSaveable]（旋转不丢），服务回调用 [DisposableEffect]
+ * 生命周期安全注册（离开页面注销，回来重挂并同步进行中状态）。
+ * 屏间切换用 AnimatedContent（淡入 + 轻微上滑），取消整理直连服务协程取消。
  */
 class MainActivity : ComponentActivity() {
-
-    private lateinit var historyManager: HistoryManager
-    private lateinit var backupManager: BackupManager
-    private val mainScope = MainScope()
-
-    // ── 导航与整理状态 ──
-    private var screen by mutableStateOf(Screen.Home)
-    private var opMode by mutableStateOf(OpMode.IDLE)
-    private var organizeProgress by mutableFloatStateOf(0f)
-    private var organizeMessage by mutableStateOf("")
-    private var organizeResult by mutableStateOf<OrganizeResult?>(null)
-    private var previewCategories by mutableStateOf<List<Pair<AppCategory, Int>>>(emptyList())
-
-    // ── Home 概览状态 ──
-    private var ready by mutableStateOf(false)
-    private var pendingAppCount by mutableIntStateOf(0)
-    private var lastOrganizeLabel by mutableStateOf("尚未")
-    private var backupLabel by mutableStateOf("未开启")
-
-    // ── 备份页状态 ──
-    private var backups by mutableStateOf<List<BackupEntry>>(emptyList())
-    private var autoBackup by mutableStateOf(true)
-
-    // ── Snackbar 状态 ──
-    private var snackMessage by mutableStateOf("")
-    private var snackType by mutableStateOf(SnackType.INFO)
-
-    private enum class OpMode { IDLE, ORGANIZE, VISION, UNDO }
-
-    private val organizeCallback = object : AutoAppOrganizerService.OrganizeCallback {
-        override fun onProgress(progress: Int, message: String) {
-            // 回调可能从后台线程触发，统一切回主线程更新 Compose 状态
-            mainScope.launch {
-                withContext(Dispatchers.Main.immediate) {
-                    organizeProgress = (progress / 100f).coerceIn(0f, 1f)
-                    organizeMessage = message
-                }
-            }
-        }
-
-        override fun onComplete(success: Boolean, folderCount: Int, message: String) {
-            mainScope.launch {
-                // 磁盘 I/O 切到 IO 线程
-                val latest = withContext(Dispatchers.IO) { historyManager.latest() }
-                val result = OrganizeResult(
-                    success = success,
-                    folderCount = folderCount,
-                    appCount = latest?.appCount ?: 0,
-                    categories = latest?.categories ?: emptyMap(),
-                    message = message
-                )
-                organizeResult = result
-                val wasOrganize = opMode == OpMode.ORGANIZE || opMode == OpMode.VISION
-                opMode = OpMode.IDLE
-                refreshAll()
-                if (success && wasOrganize && folderCount >= 0 && latest != null) {
-                    screen = Screen.Result
-                } else {
-                    screen = Screen.Home
-                    showSnack(message, if (success) SnackType.SUCCESS else SnackType.ERROR)
-                }
-            }
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
-        historyManager = HistoryManager(this)
-        backupManager = BackupManager(this)
-
-        AutoAppOrganizerService.organizeCallback = organizeCallback
-        refreshAll()
-
         setContent {
             AutoAppOrganizerTheme {
-                AppRoot()
-                // 全局 Snackbar
-                LiquidSnackbarHost(
-                    message = snackMessage,
-                    type = snackType,
-                    onDismiss = { snackMessage = "" }
-                )
+                OrganizerApp()
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+fun OrganizerApp() {
+    val context = LocalContext.current
+    val windowSize = rememberWindowSize()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    // ── 导航与业务状态（rememberSaveable：配置更改不丢） ──────────
+    var screen by rememberSaveable { mutableStateOf(Screen.Home) }
+    var organizing by rememberSaveable { mutableStateOf(false) }
+    var progress by rememberSaveable { mutableIntStateOf(0) }
+    var progressMessage by rememberSaveable { mutableStateOf("") }
+    var resultSuccess by rememberSaveable { mutableStateOf(false) }
+    var resultFolders by rememberSaveable { mutableIntStateOf(0) }
+    var resultMessage by rememberSaveable { mutableStateOf("") }
+    var pendingSnackbar by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // ── 服务回调：生命周期安全注册 ────────────────────────────────
+    DisposableEffect(Unit) {
+        val callback = object : AutoAppOrganizerService.OrganizeCallback {
+            override fun onProgress(p: Int, message: String) {
+                organizing = true
+                progress = p
+                progressMessage = message
+            }
+
+            override fun onComplete(success: Boolean, folderCount: Int, message: String) {
+                organizing = false
+                resultSuccess = success
+                resultFolders = folderCount
+                resultMessage = message
+                // 从整理页到达 → 进结果页；否则（如后台完成）只弹提示。
+                if (screen == Screen.Organizing) {
+                    screen = Screen.Result
+                } else {
+                    pendingSnackbar = message
+                }
+            }
+        }
+        AutoAppOrganizerService.organizeCallback = callback
+        // 恢复进行中的整理（进程重建 / 从通知返回）。
+        if (AutoAppOrganizerService.isOrganizing) {
+            organizing = true
+            progress = AutoAppOrganizerService.organizeProgress
+            screen = Screen.Organizing
+        }
+        onDispose {
+            if (AutoAppOrganizerService.organizeCallback === callback) {
+                AutoAppOrganizerService.organizeCallback = null
             }
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        AutoAppOrganizerService.organizeCallback = organizeCallback
-        refreshAll()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        AutoAppOrganizerService.organizeCallback = null
-    }
-
-    @Composable
-    private fun AppRoot() {
-        // 非主页时返回键回到主页；Organizing 页也允许返回（取消整理）
-        BackHandler(enabled = screen != Screen.Home) {
-            screen = Screen.Home
-        }
-
-        when (screen) {
-            Screen.Home -> HomeScreen(
-                pendingAppCount = pendingAppCount,
-                lastOrganizeLabel = lastOrganizeLabel,
-                backupLabel = backupLabel,
-                ready = ready,
-                onOrganize = ::startOrganize,
-                onOpenBackup = { screen = Screen.Backup; refreshBackups() },
-                onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
-                onVisionOrganize = ::startVisionOrganize,
-                onDiagnose = ::runDiagnostic
-            )
-
-            Screen.Organizing -> OrganizingScreen(
-                progress = organizeProgress,
-                statusMessage = organizeMessage.ifBlank { "正在分析桌面…" },
-                categories = previewCategories
-            )
-
-            Screen.Result -> ResultScreen(
-                result = organizeResult ?: OrganizeResult(false, 0, 0, emptyMap(), ""),
-                onComplete = { screen = Screen.Home },
-                onUndo = ::undoOrganize
-            )
-
-            Screen.Backup -> BackupScreen(
-                backups = backups,
-                autoBackup = autoBackup,
-                onAutoBackupChange = { autoBackup = it },
-                onRestore = { undoOrganize() },
-                onDelete = { entry ->
-                    mainScope.launch {
-                        withContext(Dispatchers.IO) { historyManager.delete(entry.timestamp) }
-                        refreshBackups()
-                        showSnack("已删除该记录", SnackType.INFO)
-                    }
-                },
-                onBack = { screen = Screen.Home }
-            )
-
-            Screen.Accessibility -> AccessibilityGuideScreen(
-                onBack = { screen = Screen.Home },
-                onOpenSettings = { openAccessibilitySettings() },
-                onComplete = { screen = Screen.Home }
-            )
+    // 非整理页到达的完成事件 → snackbar
+    LaunchedEffect(pendingSnackbar) {
+        pendingSnackbar?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            pendingSnackbar = null
         }
     }
 
-    // ──────────────────────────────────────────────
-    // 状态刷新
-    // ──────────────────────────────────────────────
-
-    private fun refreshAll() {
-        mainScope.launch {
-            val (serviceOn, overlay, latest, hasBackup, allBackups) = withContext(Dispatchers.IO) {
-                val svc = AutoAppOrganizerService.instance != null
-                val ov = hasOverlayPermission()
-                val lat = historyManager.latest()
-                val hb = backupManager.hasBackup()
-                val all = historyManager.loadAll()
-                FiveTuple(svc, ov, lat, hb, all)
-            }
-            ready = serviceOn && overlay
-            pendingAppCount = latest?.appCount ?: 0
-            lastOrganizeLabel = latest?.let { relativeLabel(it.timestamp) } ?: "尚未"
-            backupLabel = if (hasBackup) "已就绪" else "未开启"
-            val now = System.currentTimeMillis()
-            backups = allBackups.map { s ->
-                BackupEntry(
-                    timestamp = s.timestamp,
-                    folderCount = s.folderCount,
-                    appCount = s.appCount,
-                    fresh = (now - s.timestamp) < 7L * 24 * 60 * 60 * 1000
-                )
-            }
-        }
-    }
-
-    private fun refreshBackups() {
-        mainScope.launch {
-            val now = System.currentTimeMillis()
-            val all = withContext(Dispatchers.IO) { historyManager.loadAll() }
-            backups = all.map { s ->
-                BackupEntry(
-                    timestamp = s.timestamp,
-                    folderCount = s.folderCount,
-                    appCount = s.appCount,
-                    fresh = (now - s.timestamp) < 7L * 24 * 60 * 60 * 1000
-                )
-            }
-        }
-    }
-
-    private fun relativeLabel(ts: Long): String {
-        val days = ((System.currentTimeMillis() - ts) / (24 * 60 * 60 * 1000)).toInt()
-        return when {
-            days <= 0 -> "今天"
-            days == 1 -> "昨天"
-            days < 30 -> "${days}天前"
-            else -> "${days / 30}月前"
-        }
-    }
-
-    // ──────────────────────────────────────────────
-    // Snackbar
-    // ──────────────────────────────────────────────
-
-    private fun showSnack(message: String, type: SnackType = SnackType.INFO) {
-        snackMessage = message
-        snackType = type
-    }
-
-    // ──────────────────────────────────────────────
-    // 权限
-    // ──────────────────────────────────────────────
-
-    private fun hasOverlayPermission(): Boolean =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
-
-    private fun openAccessibilitySettings() {
-        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-    }
-
-    // ──────────────────────────────────────────────
-    // 操作
-    // ──────────────────────────────────────────────
-
-    private fun startOrganize() {
-        val service = AutoAppOrganizerService.instance
-        when {
-            service == null -> {
-                screen = Screen.Accessibility
-            }
-            !hasOverlayPermission() -> {
-                showSnack("请先开启悬浮窗权限", SnackType.ERROR)
-                startActivity(
-                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-                )
-            }
-            else -> {
-                opMode = OpMode.ORGANIZE
-                organizeProgress = 0f
-                organizeMessage = "正在分析桌面…"
-                organizeResult = null
-                loadPreviewCategories()
-                screen = Screen.Organizing
-                service.startOrganize()
-            }
-        }
-    }
-
-    private fun startVisionOrganize() {
-        val service = AutoAppOrganizerService.instance
-        if (service == null) {
+    fun startOrganize() {
+        if (AutoAppOrganizerService.instance == null) {
             screen = Screen.Accessibility
             return
         }
-        opMode = OpMode.VISION
-        organizeProgress = 0f
-        organizeMessage = "视觉整理中…"
-        organizeResult = null
-        loadPreviewCategories()
+        AutoAppOrganizerService.instance?.startOrganize()
         screen = Screen.Organizing
-        service.startVisionOrganize()
     }
 
-    private fun runDiagnostic() {
-        val service = AutoAppOrganizerService.instance
-        if (service == null) {
-            showSnack("请先开启无障碍服务", SnackType.ERROR)
+    fun startVisionOrganize() {
+        if (AutoAppOrganizerService.instance == null) {
+            screen = Screen.Accessibility
             return
         }
-        service.runDiagnostic()
-        showSnack("诊断中，请稍候", SnackType.INFO)
-    }
-
-    private fun undoOrganize() {
-        val service = AutoAppOrganizerService.instance
-        if (service == null) {
-            showSnack("服务未连接", SnackType.ERROR)
-            return
-        }
-        opMode = OpMode.UNDO
-        organizeProgress = 0f
-        organizeMessage = "正在还原桌面…"
+        AutoAppOrganizerService.instance?.startVisionOrganize()
         screen = Screen.Organizing
-        service.undoOrganize()
     }
 
-    private fun loadPreviewCategories() {
-        mainScope.launch {
-            val latest = withContext(Dispatchers.IO) { historyManager.latest() }
-            previewCategories = latest?.sortedCategories
-                ?.map { AppCategory.fromLabel(it.key) to it.value }
-                ?: emptyList()
+    val onBack: () -> Unit = { screen = Screen.Home }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            AnimatedContent(
+                targetState = screen,
+                transitionSpec = {
+                    (fadeIn(tween(240)) + slideInVertically(tween(240)) { it / 14 }) togetherWith
+                        fadeOut(tween(160))
+                },
+                label = "screenTransition"
+            ) { current ->
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        if (current != Screen.Home) {
+                            TopAppBar(
+                                title = {
+                                    Text(
+                                        text = when (current) {
+                                            Screen.Organizing -> "正在整理"
+                                            Screen.Result -> "整理结果"
+                                            Screen.Backup -> "备份与历史"
+                                            Screen.Accessibility -> "权限指南"
+                                            Screen.Home -> "桌面整理"
+                                        }
+                                    )
+                                },
+                                navigationIcon = {
+                                    IconButton(onClick = onBack) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "返回"
+                                        )
+                                    }
+                                },
+                                colors = TopAppBarDefaults.topAppBarColors(
+                                    containerColor = MaterialTheme.colorScheme.background,
+                                    titleContentColor = MaterialTheme.colorScheme.onBackground
+                                )
+                            )
+                        }
+                        when (current) {
+                            Screen.Home -> HomeScreen(
+                                windowSize = windowSize,
+                                onStartOrganize = { startOrganize() },
+                                onStartVisionOrganize = { startVisionOrganize() },
+                                onOpenBackup = { screen = Screen.Backup },
+                                onOpenGuide = { screen = Screen.Accessibility },
+                                onOpenSettings = {
+                                    context.startActivity(Intent(context, SettingsActivity::class.java))
+                                }
+                            )
+                            Screen.Organizing -> OrganizingScreen(
+                                windowSize = windowSize,
+                                progress = progress,
+                                message = progressMessage,
+                                onCancel = {
+                                    AutoAppOrganizerService.instance?.cancelOrganize()
+                                }
+                            )
+                            Screen.Result -> ResultScreen(
+                                windowSize = windowSize,
+                                success = resultSuccess,
+                                folderCount = resultFolders,
+                                message = resultMessage,
+                                onUndo = {
+                                    AutoAppOrganizerService.instance?.undoOrganize()
+                                    screen = Screen.Organizing
+                                },
+                                onHome = { screen = Screen.Home }
+                            )
+                            Screen.Backup -> BackupScreen(
+                                windowSize = windowSize,
+                                onUndoOrganize = {
+                                    AutoAppOrganizerService.instance?.undoOrganize()
+                                    screen = Screen.Organizing
+                                }
+                            )
+                            Screen.Accessibility -> AccessibilityGuideScreen(
+                                windowSize = windowSize
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
-
-    /** 五元组辅助类，用于一次性从 IO 线程返回多个值。 */
-    private data class FiveTuple(
-        val serviceOn: Boolean,
-        val overlay: Boolean,
-        val latest: com.autoapporganizer.model.OrganizeSession?,
-        val hasBackup: Boolean,
-        val allBackups: List<com.autoapporganizer.model.OrganizeSession>
-    )
 }
